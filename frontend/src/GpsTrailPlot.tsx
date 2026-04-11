@@ -1,9 +1,28 @@
 import type { PlotMouseEvent } from 'plotly.js'
-import { useEffect, useMemo, useState } from 'react'
+import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
+import { robustColorScaleRange } from './chartScales'
+import { plotlyInteractionConfig } from './plotlyConfig'
 import { Plot } from './plotlyFactory'
 import { distanceSeries, interpAlongDistance, nearestIndexForDistanceM } from './distanceUtils'
 import { gateLineFromMeta, gateLineFromPreview, nearestIndexOnTrail, perpendicularGateLonLat } from './gateGeometry'
+import { latAt, lonAt, numAt, telemetryLen, telemetryLonLatArrays } from './telemetryAccess'
 import type { AlignmentMeta, ComparisonPayload, GatePreview, RunResult, TrailColorMetric } from './types'
+
+/** Pooled server hints when every run has them (fair color scale across laps). */
+function pooledMapColorBoundsFromServer(
+  runs: RunResult[],
+  metric: TrailColorMetric,
+): [number, number] | undefined {
+  if (metric !== 'vz' && metric !== 'g') return undefined
+  const k = metric === 'vz' ? 'vz' : 'g'
+  const bounds = runs.map((r) => r.viz_hints?.map?.[k])
+  if (bounds.length !== runs.length || bounds.some((b) => b == null)) return undefined
+  const list = bounds as { cmin: number; cmax: number }[]
+  const cmin = Math.min(...list.map((b) => b.cmin))
+  const cmax = Math.max(...list.map((b) => b.cmax))
+  if (!Number.isFinite(cmin) || !Number.isFinite(cmax) || cmax <= cmin) return undefined
+  return [cmin, cmax]
+}
 
 const PLOT_PAPER = '#fafbfc'
 const PLOT_BG = '#ffffff'
@@ -30,28 +49,35 @@ function metricZ(
   comparison: ComparisonPayload | null,
 ): number[] {
   const tel = run.telemetry
-  switch (colorMetric) {
-    case 'g':
-      return tel.map((t) => t.g_total ?? 0)
-    case 'variance':
-      return tel.map((t) => t.vz_rolling_std ?? 0)
-    case 'jerk':
-      return tel.map((t) => t.jerk_magnitude_ms3 ?? 0)
-    case 'delta_t':
-      return tel.map((t) => {
-        const d = t.distance_m ?? 0
-        return interpAlongDistance(comparison, d) ?? 0
-      })
-    case 'braking':
-      return tel.map((t) => t.mtb_braking_intensity ?? 0)
-    case 'lean_mtb':
-      return tel.map((t) =>
-        typeof t.mtb_lean_deg === 'number' && Number.isFinite(t.mtb_lean_deg) ? t.mtb_lean_deg : 0,
-      )
-    case 'vz':
-    default:
-      return tel.map((t) => t.vz_m_s ?? 0)
+  const n = telemetryLen(tel)
+  const z = new Array<number>(n)
+  for (let i = 0; i < n; i++) {
+    switch (colorMetric) {
+      case 'g':
+        z[i] = numAt(tel, 'g_total', i)
+        break
+      case 'variance':
+        z[i] = numAt(tel, 'vz_rolling_std', i)
+        break
+      case 'jerk':
+        z[i] = numAt(tel, 'jerk_magnitude_ms3', i)
+        break
+      case 'delta_t':
+        z[i] = interpAlongDistance(comparison, numAt(tel, 'distance_m', i)) ?? 0
+        break
+      case 'braking':
+        z[i] = numAt(tel, 'mtb_braking_intensity', i)
+        break
+      case 'lean_mtb':
+        z[i] = numAt(tel, 'mtb_lean_deg', i)
+        break
+      case 'vz':
+      default:
+        z[i] = numAt(tel, 'vz_m_s', i)
+        break
+    }
   }
+  return z
 }
 
 function colorbarTitle(metric: TrailColorMetric): string {
@@ -71,6 +97,26 @@ function colorbarTitle(metric: TrailColorMetric): string {
     case 'vz':
     default:
       return 'Vz (m/s)'
+  }
+}
+
+function mapHintForMetric(metric: TrailColorMetric): string {
+  switch (metric) {
+    case 'g':
+      return 'Colors show total acceleration magnitude (g); scale is fixed ~0.5–4 g so vibration spikes clip at the top instead of flattening the lap.'
+    case 'variance':
+      return 'Colors show rolling std-dev of vertical velocity (rougher = higher).'
+    case 'jerk':
+      return 'Colors show jerk magnitude along the trail.'
+    case 'delta_t':
+      return 'Colors show time delta between laps (B−A) at each distance.'
+    case 'braking':
+      return 'Colors show braking intensity from longitudinal acceleration.'
+    case 'lean_mtb':
+      return 'Colors show estimated lean angle from gravity in the bike frame.'
+    case 'vz':
+    default:
+      return 'Colors show barometer vertical velocity (uphill vs downhill); limits use full-rate server hints when present, else ~1st–99th percentile on the trail data (padding + min span).'
   }
 }
 
@@ -140,10 +186,14 @@ function gatherGpsBounds(
   const xs: number[] = []
   const ys: number[] = []
   for (const r of runs) {
-    for (const t of r.telemetry) {
-      if (Number.isFinite(t.longitude) && Number.isFinite(t.latitude)) {
-        xs.push(t.longitude)
-        ys.push(t.latitude)
+    const tel = r.telemetry
+    const n = telemetryLen(tel)
+    for (let i = 0; i < n; i++) {
+      const lo = lonAt(tel, i)
+      const la = latAt(tel, i)
+      if (Number.isFinite(lo) && Number.isFinite(la)) {
+        xs.push(lo)
+        ys.push(la)
       }
     }
   }
@@ -203,6 +253,44 @@ function tightGpsView(
   return { rangeLon, rangeLat, geoAspect, lonLatRatio }
 }
 
+/** Robust Plotly cmin/cmax: pooled across all laps for consistent legend; outliers clip at ends. */
+function trailMapColorBounds(allZ: number[], metric: TrailColorMetric): [number, number] | undefined {
+  switch (metric) {
+    case 'g':
+      return [0.5, 4.0]
+    case 'vz':
+      // Wider than p2–p98 + tiny minSpan: baro Vz is noisy; a ~6 m/s window saturates most of the lap.
+      return (
+        robustColorScaleRange(allZ, {
+          lowPct: 1,
+          highPct: 99,
+          padFraction: 0.14,
+          minSpan: 8,
+          clampLow: -45,
+          clampHigh: 45,
+        }) ?? [-14, 14]
+      )
+    case 'variance':
+      return robustColorScaleRange(allZ, { lowPct: 2, highPct: 98, minSpan: 0.05, clampLow: 0, clampHigh: 12 })
+    case 'jerk':
+      return robustColorScaleRange(allZ, { lowPct: 2, highPct: 98, minSpan: 1, clampLow: 0, clampHigh: 150 })
+    case 'delta_t':
+      return robustColorScaleRange(allZ, {
+        symmetricAroundZero: true,
+        highPct: 98,
+        padFraction: 0.1,
+        minSpan: 0.4,
+        clampHigh: 90,
+      })
+    case 'braking':
+      return robustColorScaleRange(allZ, { lowPct: 2, highPct: 98, minSpan: 0.4, clampLow: 0, clampHigh: 20 })
+    case 'lean_mtb':
+      return robustColorScaleRange(allZ, { lowPct: 2, highPct: 98, minSpan: 4, clampLow: 0, clampHigh: 62 })
+    default:
+      return robustColorScaleRange(allZ, { lowPct: 2, highPct: 98, minSpan: 1 })
+  }
+}
+
 function colorscaleFor(metric: TrailColorMetric): string | [number, string][] {
   switch (metric) {
     case 'delta_t':
@@ -248,9 +336,10 @@ export function GpsTrailPlot({
     if (fromAlign) return fromAlign
     const fromPreview = gateLineFromPreview(gatePreview)
     if (fromPreview) return fromPreview
-    if (gateLatitude != null && gateLongitude != null && runs[0]?.telemetry?.length >= 2) {
-      const ix = nearestIndexOnTrail(runs[0].telemetry, gateLatitude, gateLongitude)
-      return perpendicularGateLonLat(runs[0].telemetry, ix, 12)
+    const t0 = runs[0]?.telemetry
+    if (gateLatitude != null && gateLongitude != null && t0 != null && telemetryLen(t0) >= 2) {
+      const ix = nearestIndexOnTrail(t0, gateLatitude, gateLongitude)
+      return perpendicularGateLonLat(t0, ix, 12)
     }
     return null
   }, [alignment, gatePreview, gateLatitude, gateLongitude, runs])
@@ -281,192 +370,287 @@ export function GpsTrailPlot({
   )
   const gpsView = useMemo(() => (gpsBoundsRaw ? tightGpsView(gpsBoundsRaw) : null), [gpsBoundsRaw])
 
-  const traces: object[] = []
-  runs.forEach((run, ri) => {
-    const tel = run.telemetry
-    if (tel.length === 0) return
-    const lon = tel.map((t) => t.longitude)
-    const lat = tel.map((t) => t.latitude)
-    const baseColor = run.color ?? '#94a3b8'
-    traces.push({
-      x: lon,
-      y: lat,
-      type: 'scatter',
-      mode: 'lines',
-      name: `${run.label ?? `Run ${ri + 1}`} path`,
-      line: { color: baseColor, width: 2 },
-      opacity: 0.35,
-      hoverinfo: 'skip',
-      showlegend: runs.length > 1,
-    })
-    const z = metricZ(run, colorMetric, comparison)
-    const hoverHtml = gpsTrailHoverHtml(run, ri)
-    traces.push({
-      x: lon,
-      y: lat,
-      type: 'scatter',
-      mode: 'markers',
-      name: `${run.label ?? `Run ${ri + 1}`} (${colorMetric})`,
-      marker: {
-        color: z,
-        colorscale: colorscaleFor(colorMetric),
-        size: 7,
-        showscale: ri === 0,
-        colorbar:
-          ri === 0
-            ? {
-                title: { text: colorbarTitle(colorMetric), font: { color: PLOT_TEXT, size: 11 } },
-                tickfont: { color: PLOT_TEXT },
-              }
-            : undefined,
-      },
-      text: tel.map(() => hoverHtml),
-      hovertemplate: '%{text}<br>lat %{y:.6f}<br>lon %{x:.6f}<extra></extra>',
-    })
-  })
-
-  if (virtualGateLine) {
-    const gateHover =
-      trailBearingDeg != null
-        ? `Virtual gate · trail heading ≈ ${trailBearingDeg.toFixed(0)}° clockwise from north (gate runs E-W if you ride north)<extra></extra>`
-        : 'Virtual gate · perpendicular to trail heading at snapped point<extra></extra>'
-    traces.push({
-      x: virtualGateLine.lon,
-      y: virtualGateLine.lat,
-      type: 'scatter',
-      mode: 'lines',
-      name: 'Virtual start gate',
-      line: { color: '#16a34a', width: 3 },
-      hovertemplate: gateHover,
-      showlegend: true,
-    })
-  }
-
-  if (gateLatitude != null && gateLongitude != null) {
-    traces.push({
-      x: [gateLongitude],
-      y: [gateLatitude],
-      type: 'scatter',
-      mode: 'markers',
-      name: 'Map click (anchor)',
-      marker: {
-        color: '#e85d04',
-        size: 16,
-        symbol: 'x',
-        line: { color: '#fff', width: 2 },
-      },
-      hovertemplate: 'Map click (rough anchor)<br>lat %{y:.6f}<br>lon %{x:.6f}<extra></extra>',
-      showlegend: true,
-    })
-  }
-
-  if (snappedA) {
-    const c0 = runs[0]?.color ?? '#0072B2'
-    const h0 = runs[0] ? `GPS snap — ${gpsTrailHoverHtml(runs[0], 0)}` : 'GPS snap — First run'
-    traces.push({
-      x: [snappedA.lon],
-      y: [snappedA.lat],
-      type: 'scatter',
-      mode: 'markers',
-      name: 'Snapped Run A',
-      marker: { color: c0, size: 11, symbol: 'diamond', line: { color: '#fff', width: 1 } },
-      text: [h0],
-      hovertemplate: '%{text}<br>lat %{y:.6f}<br>lon %{x:.6f}<extra></extra>',
-      showlegend: true,
-    })
-  }
-  if (snappedB) {
-    const c1 = runs[1]?.color ?? '#D55E00'
-    const h1 = runs[1] ? `GPS snap — ${gpsTrailHoverHtml(runs[1], 1)}` : 'GPS snap — Second run'
-    traces.push({
-      x: [snappedB.lon],
-      y: [snappedB.lat],
-      type: 'scatter',
-      mode: 'markers',
-      name: 'Snapped Run B',
-      marker: { color: c1, size: 11, symbol: 'square', line: { color: '#fff', width: 1 } },
-      text: [h1],
-      hovertemplate: '%{text}<br>lat %{y:.6f}<br>lon %{x:.6f}<extra></extra>',
-      showlegend: true,
-    })
-  }
-
-  runs.forEach((run, ri) => {
-    const tel = run.telemetry
-    if (tel.length === 0 || activeDisplayM == null) return
-    const idx = nearestIndexForDistanceM(tel, activeDisplayM)
-    const p = tel[idx]
-    traces.push({
-      x: [p.longitude],
-      y: [p.latitude],
-      type: 'scatter',
-      mode: 'markers',
-      name: `Cursor ${run.label ?? ri + 1}`,
-      marker: {
-        color: run.color ?? '#e85d04',
-        size: 14,
-        line: { color: '#fff', width: 2 },
-        symbol: 'circle',
-      },
-      text: [`Chart scrub — ${gpsTrailHoverHtml(run, ri)}`],
-      hovertemplate: '%{text}<br>lat %{y:.6f}<br>lon %{x:.6f}<extra></extra>',
-      showlegend: false,
-    })
-  })
+  const mapColorBounds = useMemo(() => {
+    const fromServer = pooledMapColorBoundsFromServer(runs, colorMetric)
+    if (fromServer != null) return fromServer
+    const allZ: number[] = []
+    for (const run of runs) {
+      allZ.push(...metricZ(run, colorMetric, comparison))
+    }
+    return trailMapColorBounds(allZ, colorMetric)
+  }, [runs, colorMetric, comparison])
 
   // Bump only when map *data* changes — not on scrub (activeDisplayM), or Plotly resets zoom on every hover.
-  const dataRevision =
-    `${runs.length}-${colorMetric}-${gatePickMode}-${gateLatitude ?? 'n'}-${virtualGateLine ? 'g' : 'n'}-${snappedA ? 'a' : ''}${snappedB ? 'b' : ''}`
+  const dataRevision = useMemo(
+    () =>
+      `${runs.length}-${colorMetric}-${gatePickMode}-${gateLatitude ?? 'n'}-${virtualGateLine ? 'g' : 'n'}-${snappedA ? 'a' : ''}${snappedB ? 'b' : ''}`,
+    [runs.length, colorMetric, gatePickMode, gateLatitude, virtualGateLine, snappedA, snappedB],
+  )
 
   const lonLatRatio = gpsView?.lonLatRatio ?? 1.25
   const xaxisRange = gpsView ? gpsView.rangeLon : undefined
   const yaxisRange = gpsView ? gpsView.rangeLat : undefined
   const geoAspect = gpsView?.geoAspect ?? 1.2
 
-  const [cursorTip, setCursorTip] = useState<{ html: string; left: number; top: number } | null>(null)
+  const plotData = useMemo(() => {
+    const traces: object[] = []
+    runs.forEach((run, ri) => {
+      const tel = run.telemetry
+      const n = telemetryLen(tel)
+      if (n === 0) return
+      const { lon, lat } = telemetryLonLatArrays(tel)
+      const baseColor = run.color ?? '#94a3b8'
+      traces.push({
+        x: lon,
+        y: lat,
+        type: 'scattergl',
+        mode: 'lines',
+        name: `${run.label ?? `Run ${ri + 1}`} · path`,
+        line: { color: baseColor, width: 2.5 },
+        opacity: 0.5,
+        hoverinfo: 'skip',
+        showlegend: false,
+      })
+      const z = metricZ(run, colorMetric, comparison)
+      const hoverHtml = gpsTrailHoverHtml(run, ri)
+      traces.push({
+        x: lon,
+        y: lat,
+        type: 'scatter',
+        mode: 'markers',
+        name: run.label ?? `Run ${ri + 1}`,
+        marker: {
+          color: z,
+          colorscale: colorscaleFor(colorMetric),
+          cauto: mapColorBounds == null,
+          ...(mapColorBounds != null ? { cmin: mapColorBounds[0], cmax: mapColorBounds[1] } : {}),
+          size: 5,
+          opacity: 0.88,
+          line: { width: 0 },
+          showscale: ri === 0,
+          colorbar:
+            ri === 0
+              ? {
+                  title: {
+                    text: colorbarTitle(colorMetric),
+                    font: { color: PLOT_TEXT, size: 11 },
+                    side: 'right',
+                  },
+                  tickfont: { color: PLOT_TEXT, size: 10 },
+                  x: 1.02,
+                  xanchor: 'left',
+                  xpad: 6,
+                  len: 0.7,
+                  thickness: 14,
+                  outlinewidth: 0,
+                  bgcolor: 'rgba(255,255,255,0.85)',
+                }
+              : undefined,
+        },
+        text: Array.from({ length: n }, () => hoverHtml),
+        hovertemplate: '%{text}<br>lat %{y:.6f}<br>lon %{x:.6f}<extra></extra>',
+        showlegend: runs.length > 1,
+      })
+    })
+
+    if (virtualGateLine) {
+      const gateHover =
+        trailBearingDeg != null
+          ? `Virtual gate · trail heading ≈ ${trailBearingDeg.toFixed(0)}° clockwise from north (gate runs E-W if you ride north)<extra></extra>`
+          : 'Virtual gate · perpendicular to trail heading at snapped point<extra></extra>'
+      traces.push({
+        x: virtualGateLine.lon,
+        y: virtualGateLine.lat,
+        type: 'scatter',
+        mode: 'lines',
+        name: 'Virtual start gate',
+        line: { color: '#16a34a', width: 3 },
+        hovertemplate: gateHover,
+        showlegend: true,
+      })
+    }
+
+    if (gateLatitude != null && gateLongitude != null) {
+      traces.push({
+        x: [gateLongitude],
+        y: [gateLatitude],
+        type: 'scatter',
+        mode: 'markers',
+        name: 'Map click (anchor)',
+        marker: {
+          color: '#e85d04',
+          size: 16,
+          symbol: 'x',
+          line: { color: '#fff', width: 2 },
+        },
+        hovertemplate: 'Map click (rough anchor)<br>lat %{y:.6f}<br>lon %{x:.6f}<extra></extra>',
+        showlegend: true,
+      })
+    }
+
+    if (snappedA) {
+      const c0 = runs[0]?.color ?? '#0072B2'
+      const h0 = runs[0] ? `GPS snap — ${gpsTrailHoverHtml(runs[0], 0)}` : 'GPS snap — First run'
+      traces.push({
+        x: [snappedA.lon],
+        y: [snappedA.lat],
+        type: 'scatter',
+        mode: 'markers',
+        name: 'Snapped Run A',
+        marker: { color: c0, size: 11, symbol: 'diamond', line: { color: '#fff', width: 1 } },
+        text: [h0],
+        hovertemplate: '%{text}<br>lat %{y:.6f}<br>lon %{x:.6f}<extra></extra>',
+        showlegend: true,
+      })
+    }
+    if (snappedB) {
+      const c1 = runs[1]?.color ?? '#D55E00'
+      const h1 = runs[1] ? `GPS snap — ${gpsTrailHoverHtml(runs[1], 1)}` : 'GPS snap — Second run'
+      traces.push({
+        x: [snappedB.lon],
+        y: [snappedB.lat],
+        type: 'scatter',
+        mode: 'markers',
+        name: 'Snapped Run B',
+        marker: { color: c1, size: 11, symbol: 'square', line: { color: '#fff', width: 1 } },
+        text: [h1],
+        hovertemplate: '%{text}<br>lat %{y:.6f}<br>lon %{x:.6f}<extra></extra>',
+        showlegend: true,
+      })
+    }
+
+    runs.forEach((run, ri) => {
+      const tel = run.telemetry
+      if (telemetryLen(tel) === 0 || activeDisplayM == null) return
+      const idx = nearestIndexForDistanceM(tel, activeDisplayM)
+      traces.push({
+        x: [lonAt(tel, idx)],
+        y: [latAt(tel, idx)],
+        type: 'scatter',
+        mode: 'markers',
+        name: `Cursor ${run.label ?? ri + 1}`,
+        marker: {
+          color: run.color ?? '#e85d04',
+          size: 14,
+          line: { color: '#fff', width: 2 },
+          symbol: 'circle',
+        },
+        text: [`Chart scrub — ${gpsTrailHoverHtml(run, ri)}`],
+        hovertemplate: '%{text}<br>lat %{y:.6f}<br>lon %{x:.6f}<extra></extra>',
+        showlegend: false,
+      })
+    })
+
+    return traces
+  }, [
+    runs,
+    colorMetric,
+    comparison,
+    mapColorBounds,
+    virtualGateLine,
+    gateLatitude,
+    gateLongitude,
+    trailBearingDeg,
+    snappedA,
+    snappedB,
+    activeDisplayM,
+  ])
+
+  const plotLayout = useMemo(
+    () => ({
+      margin: { t: 52, r: 88, b: 88, l: 58 },
+      uirevision: 'gps-trail',
+      title: {
+        text: gatePickMode ? 'Click the trail to set the start gate' : 'Trail map',
+        font: { color: PLOT_TEXT, size: 16, family: 'IBM Plex Sans, Segoe UI, system-ui, sans-serif' },
+        x: 0,
+        xanchor: 'left',
+      },
+      paper_bgcolor: PLOT_PAPER,
+      plot_bgcolor: PLOT_BG,
+      font: { color: PLOT_TEXT, family: 'IBM Plex Sans, Segoe UI, system-ui, sans-serif' },
+      xaxis: {
+        title: { text: 'Longitude (°)', standoff: 14, font: { size: 12 } },
+        tickfont: { size: 10 },
+        gridcolor: PLOT_GRID,
+        zerolinecolor: PLOT_GRID,
+        scaleanchor: 'y',
+        scaleratio: lonLatRatio,
+        range: xaxisRange,
+        autorange: gpsView ? false : true,
+      },
+      yaxis: {
+        title: { text: 'Latitude (°)', standoff: 12, font: { size: 12 } },
+        tickfont: { size: 10 },
+        gridcolor: PLOT_GRID,
+        zerolinecolor: PLOT_GRID,
+        range: yaxisRange,
+        autorange: gpsView ? false : true,
+      },
+      legend: {
+        orientation: 'h',
+        yanchor: 'top',
+        y: -0.2,
+        x: 0,
+        xanchor: 'left',
+        bgcolor: 'rgba(250, 251, 252, 0.94)',
+        bordercolor: PLOT_GRID,
+        borderwidth: 1,
+        font: { size: 11 },
+        itemwidth: 22,
+      },
+      showlegend:
+        runs.length > 1 || gateLatitude != null || virtualGateLine != null || snappedA != null || snappedB != null,
+      datarevision: dataRevision,
+      hovermode: 'closest',
+      dragmode: 'pan',
+    }),
+    [
+      gatePickMode,
+      lonLatRatio,
+      xaxisRange,
+      yaxisRange,
+      gpsView,
+      runs.length,
+      gateLatitude,
+      virtualGateLine,
+      snappedA,
+      snappedB,
+      dataRevision,
+    ],
+  )
+
+  const [cursorTipHtml, setCursorTipHtml] = useState<string | null>(null)
+  const tooltipElRef = useRef<HTMLDivElement | null>(null)
+  const lastPointerRef = useRef({ x: 0, y: 0 })
+  const lastMapHoverSyncRef = useRef<{ runIndex: number; pointIndex: number } | null>(null)
+
+  const applyTooltipPosition = (clientX: number, clientY: number) => {
+    lastPointerRef.current = { x: clientX, y: clientY }
+    const el = tooltipElRef.current
+    if (!el) return
+    const pos = cursorTooltipPosition(clientX, clientY)
+    el.style.left = `${pos.left}px`
+    el.style.top = `${pos.top}px`
+  }
+
+  useLayoutEffect(() => {
+    if (cursorTipHtml == null) return
+    applyTooltipPosition(lastPointerRef.current.x, lastPointerRef.current.y)
+  }, [cursorTipHtml])
 
   useEffect(() => {
-    if (gatePickMode) setCursorTip(null)
+    if (gatePickMode) {
+      setCursorTipHtml(null)
+      lastMapHoverSyncRef.current = null
+    }
   }, [gatePickMode])
 
   const plot = (
     <Plot
-      data={traces as never}
-      layout={{
-        margin: { t: 28, r: 24, b: 44, l: 52 },
-        uirevision: 'gps-trail',
-        title: {
-          text: gatePickMode
-            ? 'Click anywhere on the trail — that becomes distance 0 for both laps'
-            : 'GPS trail (hover dots: lap name, ZIP name, lat/lon; scrub charts)',
-          font: { color: PLOT_TEXT, size: 14 },
-        },
-        paper_bgcolor: PLOT_PAPER,
-        plot_bgcolor: PLOT_BG,
-        font: { color: PLOT_TEXT },
-        xaxis: {
-          title: { text: 'Longitude (°)' },
-          gridcolor: PLOT_GRID,
-          zerolinecolor: PLOT_GRID,
-          scaleanchor: 'y',
-          scaleratio: lonLatRatio,
-          range: xaxisRange,
-          autorange: gpsView ? false : true,
-        },
-        yaxis: {
-          title: { text: 'Latitude (°)' },
-          gridcolor: PLOT_GRID,
-          zerolinecolor: PLOT_GRID,
-          range: yaxisRange,
-          autorange: gpsView ? false : true,
-        },
-        showlegend:
-          runs.length > 1 || gateLatitude != null || virtualGateLine != null || snappedA != null || snappedB != null,
-        datarevision: dataRevision,
-        hovermode: 'closest',
-        dragmode: gatePickMode ? 'pan' : 'zoom',
-      }}
-      config={{ responsive: true, displaylogo: false }}
+      data={plotData as never}
+      layout={plotLayout as never}
+      config={plotlyInteractionConfig}
       style={{ width: '100%', height: '100%', minHeight: 0, cursor: gatePickMode ? 'crosshair' : undefined }}
       onClick={(ev: PlotMouseEvent) => {
         if (!gatePickMode) return
@@ -481,6 +665,8 @@ export function GpsTrailPlot({
         const e = ev.event
         if (!p || !e) return
 
+        lastPointerRef.current = { x: e.clientX, y: e.clientY }
+
         const cn = p.curveNumber
         const ll = lonLatLines(p.y, p.x)
         const heatCurveIndices = runs.map((_, i) => 1 + i * 2)
@@ -490,11 +676,16 @@ export function GpsTrailPlot({
 
         if (hi >= 0 && p.pointIndex != null) {
           html = gpsTrailHoverHtml(runs[hi], hi) + ll
-          const run = runs[hi]
-          const xs = distanceSeries(run.telemetry)
-          const xm = xs[p.pointIndex]
-          if (typeof xm === 'number') onActiveDisplayM(xm)
+          const prev = lastMapHoverSyncRef.current
+          if (prev?.runIndex !== hi || prev.pointIndex !== p.pointIndex) {
+            lastMapHoverSyncRef.current = { runIndex: hi, pointIndex: p.pointIndex }
+            const run = runs[hi]
+            const xs = distanceSeries(run.telemetry)
+            const xm = xs[p.pointIndex]
+            if (typeof xm === 'number') onActiveDisplayM(xm)
+          }
         } else {
+          lastMapHoverSyncRef.current = null
           let idx = runs.length * 2
           if (virtualGateLine) {
             if (cn === idx) {
@@ -532,34 +723,46 @@ export function GpsTrailPlot({
         }
 
         if (html == null) return
-        const pos = cursorTooltipPosition(e.clientX, e.clientY)
-        setCursorTip({ html, ...pos })
+        setCursorTipHtml(html)
+        queueMicrotask(() => applyTooltipPosition(e.clientX, e.clientY))
       }}
-      onUnhover={() => setCursorTip(null)}
+      onUnhover={() => {
+        setCursorTipHtml(null)
+        lastMapHoverSyncRef.current = null
+      }}
     />
   )
 
   return (
-    <div
-      className="gps-map-aspect-wrap"
-      style={{ aspectRatio: String(geoAspect) }}
-      onMouseMove={(ev) => {
-        setCursorTip((prev) => {
-          if (!prev) return prev
-          return { ...prev, ...cursorTooltipPosition(ev.clientX, ev.clientY) }
-        })
-      }}
-      onMouseLeave={() => setCursorTip(null)}
-    >
-      {plot}
-      {cursorTip != null && (
-        <div
-          className="gps-cursor-tooltip"
-          style={{ left: cursorTip.left, top: cursorTip.top }}
-          // eslint-disable-next-line react/no-danger -- escaped lap/ZIP strings from gpsTrailHoverHtml
-          dangerouslySetInnerHTML={{ __html: cursorTip.html }}
-        />
-      )}
+    <div className="gps-map-ui">
+      <div
+        className="gps-map-aspect-wrap"
+        style={{ aspectRatio: String(geoAspect) }}
+        onMouseMove={(ev) => {
+          if (cursorTipHtml == null) return
+          applyTooltipPosition(ev.clientX, ev.clientY)
+        }}
+        onMouseLeave={() => {
+          setCursorTipHtml(null)
+          lastMapHoverSyncRef.current = null
+        }}
+      >
+        {plot}
+        {cursorTipHtml != null && (
+          <div
+            ref={tooltipElRef}
+            className="gps-cursor-tooltip"
+            style={{ left: 0, top: 0 }}
+            // eslint-disable-next-line react/no-danger -- escaped lap/ZIP strings from gpsTrailHoverHtml
+            dangerouslySetInnerHTML={{ __html: cursorTipHtml }}
+          />
+        )}
+      </div>
+      <p className="gps-map-hint">
+        {gatePickMode
+          ? 'Distance and time for both laps start at your click. Press Cancel to stop.'
+          : `${mapHintForMetric(colorMetric)} Hover for lap name and coordinates — charts stay synced when you scrub. Scroll wheel zooms; drag to pan.`}
+      </p>
     </div>
   )
 }

@@ -73,8 +73,8 @@ class AlignBaroRequest(BaseModel):
     run_b_label: str | None = Field(default=None, max_length=300)
     run_a_source_name: str | None = Field(default=None, max_length=500)
     run_b_source_name: str | None = Field(default=None, max_length=500)
-    run_a_telemetry: list[dict[str, Any]]
-    run_b_telemetry: list[dict[str, Any]]
+    run_a_telemetry: Any  # row records or column-oriented dict (from pipeline JSON)
+    run_b_telemetry: Any
 
 
 class PreviewGateRequest(BaseModel):
@@ -82,8 +82,8 @@ class PreviewGateRequest(BaseModel):
     gate_longitude: float
     gate_radius_m: float = Field(default=20.0, ge=1.0, le=500.0)
     gate_half_width_m: float = Field(default=12.0, ge=2.0, le=80.0)
-    run_a_telemetry: list[dict[str, Any]]
-    run_b_telemetry: list[dict[str, Any]]
+    run_a_telemetry: Any
+    run_b_telemetry: Any
 
 
 @app.get("/health")

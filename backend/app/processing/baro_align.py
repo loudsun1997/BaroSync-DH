@@ -263,16 +263,36 @@ def align_runs_at_gate_baro(
     return a, b, meta
 
 
-def telemetry_records_to_dataframe_preview(records: list[dict[str, Any]]) -> pd.DataFrame:
-    """Minimal columns for gate snap preview (no Vz required)."""
-    df = pd.DataFrame(records)
+TelemetryPayload = list[dict[str, Any]] | dict[str, list[Any]]
+
+
+def telemetry_payload_to_dataframe(
+    payload: TelemetryPayload,
+    *,
+    require_vz: bool = True,
+) -> pd.DataFrame:
+    """Build a DataFrame from row records or a column-oriented dict (same JSON the pipeline emits)."""
+    if isinstance(payload, list):
+        df = pd.DataFrame(payload)
+    elif isinstance(payload, dict):
+        if not payload:
+            raise ValueError("Empty telemetry")
+        df = pd.DataFrame(payload)
+    else:
+        raise ValueError("Telemetry must be a JSON array of records or a column-oriented object")
     if df.empty:
         raise ValueError("Empty telemetry")
     for col in ("unix_ns", "latitude", "longitude"):
         if col not in df.columns:
             raise ValueError(f"Missing {col}")
-    df = df.sort_values("unix_ns").reset_index(drop=True)
-    return df
+    if require_vz and "vz_m_s" not in df.columns:
+        raise ValueError("Missing vz_m_s")
+    return df.sort_values("unix_ns").reset_index(drop=True)
+
+
+def telemetry_records_to_dataframe_preview(records: TelemetryPayload) -> pd.DataFrame:
+    """Gate snap preview: lat/lon/time only (no Vz required)."""
+    return telemetry_payload_to_dataframe(records, require_vz=False)
 
 
 def preview_gate_snap(
@@ -310,17 +330,8 @@ def preview_gate_snap(
     return out
 
 
-def telemetry_records_to_dataframe(records: list[dict[str, Any]]) -> pd.DataFrame:
-    df = pd.DataFrame(records)
-    if df.empty:
-        raise ValueError("Empty telemetry")
-    for col in ("unix_ns", "latitude", "longitude"):
-        if col not in df.columns:
-            raise ValueError(f"Missing {col}")
-    if "vz_m_s" not in df.columns:
-        raise ValueError("Missing vz_m_s")
-    df = df.sort_values("unix_ns").reset_index(drop=True)
-    return df
+def telemetry_records_to_dataframe(records: TelemetryPayload) -> pd.DataFrame:
+    return telemetry_payload_to_dataframe(records, require_vz=True)
 
 
 def build_comparison_payload(a: pd.DataFrame, b: pd.DataFrame, ds_m: float = 1.0) -> dict[str, Any]:

@@ -1,3 +1,10 @@
+/** Column-oriented telemetry from the API (one parallel array per field). */
+export type TelemetryColumnar = Record<string, (number | boolean | null)[] | undefined> & {
+  unix_ns: number[]
+  latitude: number[]
+  longitude: number[]
+}
+
 export type TelemetryPoint = {
   unix_ns: number
   latitude: number
@@ -77,6 +84,20 @@ export type AlmostJumpDebug = {
   note?: string
 }
 
+/** Backend-derived map color limits (full-rate proc); frontend falls back to client percentiles if missing. */
+export type MapColorBounds = { cmin: number; cmax: number }
+
+export type VizHints = {
+  map: {
+    g?: MapColorBounds
+    vz?: MapColorBounds
+  }
+  charts?: {
+    /** Suggested half-span for symmetric Vz Y-axis (m/s); pooled across laps with max(). */
+    vz_symmetric_half_span_m_s?: number
+  }
+}
+
 export type MtbStats = {
   max_lean_deg: number
   total_airtime_s: number
@@ -94,7 +115,8 @@ export type MtbStats = {
 }
 
 export type RunResult = {
-  telemetry: TelemetryPoint[]
+  /** Row records (legacy) or column-oriented object from the pipeline. */
+  telemetry: TelemetryPoint[] | TelemetryColumnar
   altitude_vs_distance: { distance_m: number[]; altitude_m: number[] }
   sample_rate_hz: number
   smoothness_score?: number
@@ -104,6 +126,8 @@ export type RunResult = {
   color?: string
   mtb_stats?: MtbStats | null
   braking_intervals_m?: BrakingIntervalM[]
+  /** From full-rate pipeline; map + chart defaults when present. */
+  viz_hints?: VizHints | null
 }
 
 export type ComparisonPayload = {

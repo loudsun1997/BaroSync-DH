@@ -43,11 +43,15 @@ from app.processing.mtb_processing import (
     mtb_build_100hz_master_grid,
 )
 from app.processing.spatial import cumulative_distance_m, filter_gps_outliers
+from app.processing.viz_hints import compute_viz_hints
 from app.processing.sync import interp_gps_to_master
 
 _log = logging.getLogger(__name__)
 
 RUN_COLORS = ["#0072B2", "#D55E00", "#009E73", "#CC79A7", "#E69F00"]
+
+# Frontend charts/maps do not need full 100 Hz; decimate before column export to cut JSON build time and payload size.
+TELEMETRY_EXPORT_MAX_HZ = 20.0
 
 # Populated in child processes via ProcessPoolExecutor initializer (avoids pickling aux per task).
 _ctx_aux_pairs: list[tuple[str, pd.DataFrame]] | None = None
@@ -143,6 +147,10 @@ def process_highfreq_frame(
         pr_alt = merged["altitude_from_pressure_m"].to_numpy(dtype=np.float64)
         merged["sanity_pressure_minus_app_m"] = pr_alt - app
 
+    # Vz must track barometric vertical motion. The GPS low-frequency anchor below is slow-moving;
+    # its time derivative can dominate when baro descent is gentle, wrongly coloring slow descents as uphill.
+    alt_for_vz = merged["altitude_m"].to_numpy(dtype=np.float64).copy()
+
     if "gps_altitude_m" in merged.columns:
         gpi = merged["gps_altitude_m"].to_numpy(dtype=np.float64)
         if np.isfinite(np.nanmean(gpi)):
@@ -160,8 +168,10 @@ def process_highfreq_frame(
     alt_savgol = savgol_smooth_altitude(alt_filt, fs_hz=fs)
     merged["altitude_smooth_m"] = smooth_altitude_cubic_spline(merged["unix_ns"].to_numpy(), alt_savgol)
     ns = merged["unix_ns"].to_numpy()
-    # Vz from Savitzky–Golay altitude only (not spline) to avoid spline-derivative spikes; extra SG on Vz for trends.
-    vz = vertical_velocity_m_s(alt_savgol, ns)
+    # Vz from baro altitude only (pre-GPS anchor); charts/maps still use blended altitude_smooth_m above.
+    alt_filt_vz = butterworth_lowpass(alt_for_vz, fs_hz=fs, cutoff_hz=4.0, order=2)
+    alt_savgol_vz = savgol_smooth_altitude(alt_filt_vz, fs_hz=fs)
+    vz = vertical_velocity_m_s(alt_savgol_vz, ns)
     merged["vz_m_s"] = savgol_smooth_series(vz, fs_hz=fs, window_s=0.55, polyorder=2)
 
     for col in ("acc_x", "acc_y", "acc_z"):
@@ -250,7 +260,7 @@ def process_highfreq_frame(
     return merged
 
 
-def dataframe_to_points(df: pd.DataFrame) -> list[dict[str, Any]]:
+def _telemetry_export_column_names(df: pd.DataFrame) -> list[str]:
     cols = [
         "unix_ns",
         "latitude",
@@ -303,8 +313,52 @@ def dataframe_to_points(df: pd.DataFrame) -> list[dict[str, Any]]:
             continue
         if motion_pat.match(c):
             extra.append(c)
-    use = [c for c in cols + extra if c in df.columns]
-    return df[use].replace({np.nan: None}).to_dict(orient="records")
+    return [c for c in cols + extra if c in df.columns]
+
+
+def decimate_dataframe_for_export(df: pd.DataFrame, max_hz: float) -> pd.DataFrame:
+    if len(df) < 2 or not np.isfinite(max_hz) or max_hz <= 0:
+        return df
+    fs = float(estimate_sample_rate_hz(df["unix_ns"].to_numpy()))
+    if not np.isfinite(fs) or fs <= max_hz:
+        return df
+    step = max(1, int(round(fs / max_hz)))
+    return df.iloc[::step].copy()
+
+
+def _series_to_jsonable_list(s: pd.Series) -> list[Any]:
+    """JSON-safe lists: NaN/inf → None; preserve bool and int for unix_ns."""
+    if pd.api.types.is_bool_dtype(s.dtype):
+        out: list[Any] = []
+        for v in s.tolist():
+            if v is None or (isinstance(v, (float, np.floating)) and pd.isna(v)):
+                out.append(None)
+            else:
+                out.append(bool(v))
+        return out
+    if pd.api.types.is_integer_dtype(s.dtype):
+        out_i: list[Any] = []
+        for v in s.tolist():
+            if v is None or pd.isna(v):
+                out_i.append(None)
+            else:
+                out_i.append(int(v))
+        return out_i
+    arr = pd.to_numeric(s, errors="coerce").to_numpy(dtype=np.float64, copy=False)
+    out_f: list[Any] = []
+    for x in arr.flat:
+        if np.isfinite(x):
+            out_f.append(float(x))
+        else:
+            out_f.append(None)
+    return out_f
+
+
+def dataframe_to_telemetry_columns(df: pd.DataFrame) -> dict[str, Any]:
+    """Column-oriented telemetry for JSON (faster than one dict per sample)."""
+    use = _telemetry_export_column_names(df)
+    sub = df[use]
+    return {c: _series_to_jsonable_list(sub[c]) for c in use}
 
 
 def run_dict_from_proc(proc: pd.DataFrame) -> dict[str, Any]:
@@ -320,16 +374,20 @@ def run_dict_from_proc(proc: pd.DataFrame) -> dict[str, Any]:
             proc["mtb_braking_active"].to_numpy(dtype=bool),
             proc["distance_m"].to_numpy(dtype=np.float64),
         )
+    proc_telemetry = decimate_dataframe_for_export(proc, TELEMETRY_EXPORT_MAX_HZ)
+    # Full-rate grid (e.g. ~100 Hz); telemetry JSON is decimated to ~TELEMETRY_EXPORT_MAX_HZ for size.
+    sample_rate_hz = float(estimate_sample_rate_hz(proc["unix_ns"].to_numpy()))
     return {
-        "telemetry": dataframe_to_points(proc),
+        "telemetry": dataframe_to_telemetry_columns(proc_telemetry),
         "altitude_vs_distance": {
             "distance_m": s.tolist(),
             "altitude_m": np.asarray(h, dtype=np.float64).tolist(),
         },
-        "sample_rate_hz": estimate_sample_rate_hz(proc["unix_ns"].to_numpy()),
+        "sample_rate_hz": sample_rate_hz,
         "smoothness_score": smoothness,
         "mtb_stats": mtb_stats,
         "braking_intervals_m": braking_intervals_m,
+        "viz_hints": compute_viz_hints(proc),
     }
 
 

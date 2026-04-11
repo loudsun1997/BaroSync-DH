@@ -1,6 +1,8 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
+import { ChartPercentileControls } from './ChartPercentileControls'
 import { GpsTrailPlot } from './GpsTrailPlot'
 import { TelemetryCharts } from './TelemetryCharts'
+import { CHART_PERCENTILE_DEFAULTS } from './chartScales'
 import {
   AIRTIME_TOOLTIP,
   JUMP_DROP_COUNTS_TOOLTIP,
@@ -16,6 +18,7 @@ import {
   MAX_LEAN_TOOLTIP,
   syncQualityFromPeak,
 } from './riderMetrics'
+import { hasFiniteNumericInColumn, telemetryLen } from './telemetryAccess'
 import type { GatePreview, TrailColorMetric, UploadJobStart, UploadJobStatus, UploadResponse } from './types'
 import './App.css'
 
@@ -61,6 +64,10 @@ export default function App() {
   const [snapPreviewBusy, setSnapPreviewBusy] = useState(false)
   const [snapPreviewErr, setSnapPreviewErr] = useState<string | null>(null)
   const [normalizeElevation, setNormalizeElevation] = useState(false)
+  const [chartYPercentiles, setChartYPercentiles] = useState<{ low: number; high: number }>({
+    low: CHART_PERCENTILE_DEFAULTS.low,
+    high: CHART_PERCENTILE_DEFAULTS.high,
+  })
 
   const runs = data?.runs ?? []
 
@@ -70,12 +77,8 @@ export default function App() {
     }
   }, [data?.comparison, colorMetric])
 
-  const hasMtbLean = runs.some((r) =>
-    r.telemetry.some((t) => t.mtb_lean_deg != null && Number.isFinite(Number(t.mtb_lean_deg))),
-  )
-  const hasMtbBraking = runs.some((r) =>
-    r.telemetry.some((t) => t.mtb_braking_ma_ms2 != null && Number.isFinite(Number(t.mtb_braking_ma_ms2))),
-  )
+  const hasMtbLean = runs.some((r) => hasFiniteNumericInColumn(r.telemetry, 'mtb_lean_deg'))
+  const hasMtbBraking = runs.some((r) => hasFiniteNumericInColumn(r.telemetry, 'mtb_braking_ma_ms2'))
 
   useEffect(() => {
     if (colorMetric === 'lean_mtb' && runs.length > 0 && !hasMtbLean) {
@@ -252,7 +255,14 @@ export default function App() {
     return syncQualityFromPeak(peak)
   }, [data?.alignment?.correlation_peak_normalized])
 
-  const primaryTelemetryLen = runs[0]?.telemetry?.length ?? 0
+  const primaryTelemetryLen = runs[0] ? telemetryLen(runs[0].telemetry) : 0
+  const vzClampHighSuggested = useMemo(() => {
+    const spans = runs
+      .map((r) => r.viz_hints?.charts?.vz_symmetric_half_span_m_s)
+      .filter((x): x is number => typeof x === 'number' && Number.isFinite(x) && x > 0)
+    if (spans.length === 0) return undefined
+    return Math.max(...spans)
+  }, [runs])
   const canBaroSync = rawUpload != null && rawUpload.runs.length >= 2 && gateLat != null && gateLon != null
   const gateSet = gateLat != null && gateLon != null
   const twoLaps = rawUpload != null && rawUpload.runs.length >= 2
@@ -558,12 +568,20 @@ export default function App() {
             />
           </div>
           <div className="chart-panel">
+            <ChartPercentileControls
+              low={chartYPercentiles.low}
+              high={chartYPercentiles.high}
+              onChange={setChartYPercentiles}
+            />
             <TelemetryCharts
               runs={runs}
               activeDisplayM={activeDisplayM}
               onActiveDisplayM={setActiveDisplayM}
               comparison={data?.comparison ?? null}
               normalizeElevation={normalizeElevation}
+              yPercentileLow={chartYPercentiles.low}
+              yPercentileHigh={chartYPercentiles.high}
+              vzClampHighSuggested={vzClampHighSuggested}
             />
           </div>
         </div>

@@ -419,6 +419,23 @@ body {
   box-shadow: 0 1px 3px rgba(28, 35, 51, 0.06);
 }
 
+/* GPS block: plot + caption (legend lives inside Plotly, below plot area) */
+.trail-panel .gps-map-ui {
+  display: flex;
+  flex-direction: column;
+  gap: 0;
+}
+
+.trail-panel .gps-map-hint {
+  margin: 0;
+  padding: 0.65rem 1rem 0.85rem;
+  font-size: 0.8125rem;
+  line-height: 1.45;
+  color: var(--text-muted);
+  background: var(--bg-muted);
+  border-top: 1px solid var(--border);
+}
+
 /* Geographic aspect + tight axis range — map height follows trail shape, not the chart column */
 .trail-panel .gps-map-aspect-wrap {
   position: relative;
@@ -455,10 +472,104 @@ body {
   box-shadow: 0 1px 3px rgba(28, 35, 51, 0.06);
 }
 
+.chart-percentile-bar {
+  margin-bottom: 0.65rem;
+  padding: 0.5rem 0.65rem;
+  border-radius: 8px;
+  border: 1px solid var(--border);
+  background: rgba(248, 250, 252, 0.85);
+}
+
+.chart-percentile-bar-title {
+  display: block;
+  font-size: 0.8rem;
+  font-weight: 600;
+  color: var(--text-muted);
+  margin-bottom: 0.35rem;
+}
+
+.chart-percentile-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-end;
+  gap: 0.65rem 1rem;
+}
+
+.chart-percentile-label {
+  display: flex;
+  flex-direction: column;
+  gap: 0.2rem;
+  font-size: 0.78rem;
+  color: var(--text-muted);
+  min-width: 140px;
+  flex: 1 1 160px;
+}
+
+.chart-percentile-name {
+  font-weight: 500;
+}
+
+.chart-percentile-label input[type='range'] {
+  width: 100%;
+  max-width: 220px;
+}
+
+.chart-percentile-num {
+  width: 3.25rem;
+  padding: 0.2rem 0.35rem;
+  font-size: 0.85rem;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  background: var(--bg-card);
+  color: var(--text);
+}
+
+.chart-percentile-reset {
+  align-self: center;
+  margin-top: 0.35rem;
+  font-size: 0.8rem;
+}
+
+.chart-percentile-hint {
+  margin: 0.45rem 0 0;
+  font-size: 0.72rem;
+  line-height: 1.35;
+  color: var(--text-muted);
+}
+
 .charts-stack {
   display: flex;
   flex-direction: column;
   gap: 0.5rem;
+}
+
+.charts-extra-sensor-toggle {
+  margin: 0.35rem 0 0.15rem;
+}
+
+.charts-extra-sensor-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+  padding: 0.45rem 0.75rem;
+  font-size: 0.8125rem;
+  font-weight: 600;
+  color: var(--text);
+  background: var(--bg-muted);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  cursor: pointer;
+  font-family: inherit;
+}
+
+.charts-extra-sensor-btn:hover {
+  background: var(--bg-card);
+  border-color: var(--text-muted);
+}
+
+.charts-extra-sensor-btn:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
 }
 
 .charts-stack .sensor-section-title {

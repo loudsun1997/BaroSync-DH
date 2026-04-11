@@ -1,11 +1,23 @@
-import type { ComparisonPayload, TelemetryPoint } from './types'
+import type { ComparisonPayload, RunResult } from './types'
+import { isTelemetryRecords, telemetryLen } from './telemetryAccess'
 
-export function distanceSeries(telemetry: TelemetryPoint[]): number[] {
-  return telemetry.map((t) => t.distance_m ?? 0)
+export function distanceSeries(telemetry: RunResult['telemetry']): number[] {
+  if (isTelemetryRecords(telemetry)) {
+    return telemetry.map((t) => t.distance_m ?? 0)
+  }
+  const d = telemetry.distance_m
+  const n = telemetry.unix_ns.length
+  if (!d || d.length !== n) return Array(n).fill(0)
+  const out = new Array<number>(n)
+  for (let i = 0; i < n; i++) {
+    const v = d[i]
+    out[i] = typeof v === 'number' && Number.isFinite(v) ? v : 0
+  }
+  return out
 }
 
-export function nearestIndexForDistanceM(telemetry: TelemetryPoint[], targetM: number): number {
-  if (telemetry.length === 0) return 0
+export function nearestIndexForDistanceM(telemetry: RunResult['telemetry'], targetM: number): number {
+  if (telemetryLen(telemetry) === 0) return 0
   const xs = distanceSeries(telemetry)
   let best = 0
   let bestD = Infinity
