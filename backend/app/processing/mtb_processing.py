@@ -28,7 +28,7 @@ ZERO_CAL_DURATION_S = 2.0
 RIDER_SPEED_GATE_M_S = 0.5
 
 # Airtime uses ‖TotalAcceleration‖/g (sqrt(x²+y²+z²)/9.80665): ~1g rolling, →0 in free fall.
-# “Clean flight”: 2nd-order Butterworth LPF on raw G_total; takeoff peaks stay on raw; landing uses sustained G (50 Hz + 20 ms mean).
+# “Clean flight”: 2nd-order Butterworth LPF on raw G_total; takeoff peaks stay on raw; landing uses sustained G (30 Hz LPF + 20 ms mean).
 AIRTIME_TOTAL_G_MAX = 0.55
 # Steep chute (median Vz very negative): stricter low-G cap (same ratio vs old 0.27/0.45).
 AIRTIME_TOTAL_G_MAX_STRICT = 0.33
@@ -38,8 +38,8 @@ AIRTIME_FLIGHT_LOWPASS_ALT_HZ = 20.0
 AIRTIME_MIN_DURATION_S = 0.20
 AIRTIME_LANDING_WITHIN_S = 0.50
 AIRTIME_TAKEOFF_LOOKBACK_S = 0.20
-# Landing gate & reported G-Force use sustained load (50 Hz LPF + 20 ms mean), not single-sample raw spikes.
-LANDING_IMPACT_LOWPASS_HZ = 50.0
+# Landing / impact: 30 Hz LPF on ‖total acc‖/g (mount chatter), then max of a ~20 ms moving average in the landing window — no hard cap.
+AIRTIME_LANDING_LPF_HZ = 30.0
 LANDING_IMPACT_ROLLING_S = 0.020
 LANDING_PEAK_MIN_G = 1.3
 # Extra raw search after flight end (diagnostics): “delayed peak” hint if outside landing window.
@@ -236,15 +236,15 @@ def braking_intervals_along_distance(
 
 
 def sustained_landing_g_series(g_total_g: np.ndarray, fs_hz: float) -> np.ndarray:
-    """50 Hz LPF on ‖total acc‖/g, then centered rolling mean (~20 ms) for impact / landing stats."""
+    """30 Hz LPF on ‖total acc‖/g, then centered rolling mean over ~20 ms of samples (duration-weighted, not a spike cap)."""
     g_in = np.nan_to_num(np.asarray(g_total_g, dtype=np.float64), nan=1.0, posinf=1.0, neginf=0.0)
     lp = butterworth_lowpass(
         g_in,
         fs_hz=fs_hz,
-        cutoff_hz=LANDING_IMPACT_LOWPASS_HZ,
+        cutoff_hz=AIRTIME_LANDING_LPF_HZ,
         order=2,
     )
-    win = max(3, int(round(LANDING_IMPACT_ROLLING_S * fs_hz)))
+    win = max(1, int(round(LANDING_IMPACT_ROLLING_S * fs_hz)))
     return (
         pd.Series(lp)
         .rolling(win, center=True, min_periods=1)
@@ -282,7 +282,7 @@ def apply_mtb_features(
         "jump_count": 0,
         "drop_count": 0,
         "drops_baro_witness": 0,
-        # Max ‖total a‖/g peak while moving (raw series when available; prominence-filtered).
+        # Max sustained landing ‖total a‖/g (30 Hz LPF + 20 ms mean) while moving; find_peaks fallback if no validated airtime.
         "max_landing_impact_g": 0.0,
         "simple_airtime_s": 0.0,
     }
@@ -345,7 +345,7 @@ def apply_mtb_features(
         simple_mask = (pg0 < SIMPLE_RAW_AIRTIME_G_MAX) & moving & np.isfinite(pg0)
         stats["simple_airtime_s"] = float(np.sum(simple_mask) / fs_hz)
 
-    # Landing G-Force: sustained load (50 Hz LPF + 20 ms rolling mean), not raw single-sample peaks.
+    # Landing G-Force: max of ~20 ms moving average on LPF ‖total a‖/g (no hard cap — true sustained load wins).
     if g_sustained is not None and moving.any():
         tg = np.nan_to_num(g_sustained, nan=-np.inf)
         imp_masked = np.where(moving, tg, -np.inf)
@@ -417,7 +417,7 @@ def apply_mtb_features(
         merged["mtb_braking_active"] = np.zeros(n, dtype=bool)
         merged["mtb_braking_intensity"] = np.zeros(n, dtype=np.float64)
 
-    # Airtime: 10 Hz LPF on raw G_total for flight (20 Hz reference for diagnostics); raw peaks for landing.
+    # Airtime: 10 Hz LPF on raw G_total for flight (20 Hz reference for diagnostics); sustained (30 Hz + 20 ms MA) for landing gate/stat.
     if peak_g is not None:
         _diag = diagnostic_run_label or "run"
         g_src = np.asarray(peak_g, dtype=np.float64)
@@ -438,12 +438,13 @@ def apply_mtb_features(
         if log_airtime_rejections:
             _log.info(
                 "[airtime diagnostic] %s | Flight LPF=%.0fHz (ref %.0fHz logged on rejects); "
-                "flight<%.2fg; min duration %.2fs; landing raw >%.2fg within %.0fms; speed>%.1fm/s",
+                "flight<%.2fg; min duration %.2fs; landing sustained (%.0fHz+20ms mean) >%.2fg within %.0fms; speed>%.1fm/s",
                 _diag,
                 AIRTIME_FLIGHT_LOWPASS_HZ,
                 AIRTIME_FLIGHT_LOWPASS_ALT_HZ,
                 AIRTIME_TOTAL_G_MAX,
                 AIRTIME_MIN_DURATION_S,
+                AIRTIME_LANDING_LPF_HZ,
                 LANDING_PEAK_MIN_G,
                 AIRTIME_LANDING_WITHIN_S * 1000.0,
                 RIDER_SPEED_GATE_M_S,
@@ -563,6 +564,10 @@ def apply_mtb_features(
                     )
                 continue
             post = gs[lo2 : hi2 + 1]
+            post_raw = pg[lo2 : hi2 + 1]
+            raw_max_win = (
+                float(np.max(np.nan_to_num(post_raw, nan=-np.inf))) if post_raw.size else float("nan")
+            )
             if post.size:
                 post_f = np.nan_to_num(post, nan=-np.inf)
                 landing_max = float(np.max(post_f))
@@ -612,14 +617,15 @@ def apply_mtb_features(
                     )
                     _log.info(
                         "[airtime diagnostic] %s | Candidate flight [%.3fs–%.3fs] rejected — LANDING GATE: "
-                        "max sustained G (50Hz+20ms mean) in first %.0fms after flight = %.2fg (need >%.2fg); "
+                        "Raw Peak: %.1fg | Sustained (20ms) Peak: %.2fg (need >%.2fg) in first %.0fms after flight; "
                         "argmax at +%.0fms. %s Min flight LPF 10Hz=%.3fg 20Hz=%.3fg.%s",
                         _diag,
                         t_a2,
                         t_b2,
-                        AIRTIME_LANDING_WITHIN_S * 1000.0,
+                        raw_max_win if np.isfinite(raw_max_win) else float("nan"),
                         landing_max if np.isfinite(landing_max) else float("nan"),
                         LANDING_PEAK_MIN_G,
+                        AIRTIME_LANDING_WITHIN_S * 1000.0,
                         argmax_rel_ms if np.isfinite(argmax_rel_ms) else float("nan"),
                         tk,
                         mn10,
@@ -630,6 +636,13 @@ def apply_mtb_features(
             seg_dur_s = (b2 - a2 + 1) * dt
             total_air += seg_dur_s
             validated_landing_max_g = max(validated_landing_max_g, landing_max)
+            if log_airtime_rejections and np.isfinite(raw_max_win) and np.isfinite(landing_max):
+                _log.info(
+                    "[landing impact] %s | Raw Peak: %.1fg | Sustained (20ms) Peak: %.1fg",
+                    _diag,
+                    raw_max_win,
+                    landing_max,
+                )
             vz_seg_med = float(np.nanmedian(vz[a2 : b2 + 1]))
             is_jump = (
                 a2 > 0
@@ -649,7 +662,7 @@ def apply_mtb_features(
         stats["drops_baro_witness"] = int(drops_baro_witness)
         if total_air <= 1e-9 and almost:
             stats["almost_jumps"] = almost
-        # Spec: max impact from raw spikes in landing-validation windows when we have any.
+        # Overwrite find_peaks fallback with max sustained landing from validated windows when we have any.
         if validated_landing_max_g > 0:
             stats["max_landing_impact_g"] = float(validated_landing_max_g)
 

@@ -35,7 +35,7 @@ export const SIMPLE_AIRTIME_TOOLTIP =
   'Naive low-G clock: every sample while GPS speed > ~0.5 m/s where raw ‖TotalAcceleration‖/g is below ~0.55 g. No landing/takeoff checks—will include smooth coasting and vibration; compare to validated Airtime above.'
 
 export const AIRTIME_TOOLTIP =
-  'Total seconds in the air: 10 Hz Butterworth LPF on raw ‖TotalAcceleration‖/g for flight (< ~0.55 g; 20 Hz min logged on first-run rejects), min ~0.20 s; sustained landing max (50 Hz LPF + 20 ms rolling mean on ‖TotalAcceleration‖/g) > ~1.3 g within 500 ms. Jump if raw takeoff > ~1.15 g in ~200 ms before flight; else drop. GPS speed > ~0.5 m/s. First run: see backend log [airtime diagnostic].'
+  'Total seconds in the air: 10 Hz Butterworth LPF on raw ‖TotalAcceleration‖/g for flight (< ~0.55 g; 20 Hz min logged on first-run rejects), min ~0.20 s; sustained landing max (30 Hz LPF + 20 ms rolling mean on ‖TotalAcceleration‖/g) > ~1.3 g within 500 ms. Jump if raw takeoff > ~1.15 g in ~200 ms before flight; else drop. GPS speed > ~0.5 m/s. First run: see backend log [airtime diagnostic].'
 
 export const JUMP_DROP_COUNTS_TOOLTIP =
   'Jump: pre-flight raw ‖total acc‖ peaked ≥ ~1.15 g (lip/pop). Drop: rolled off ~1 g → low G with no pop, still landed with a spike. “Baro drops” = drops whose median Vz during flight was < ~−1.5 m/s.'
@@ -44,7 +44,7 @@ export const MAX_LEAN_TOOLTIP =
   'The largest lean angle we saw on this lap—from gravity in the leveled bike frame when available, otherwise from orientation roll.'
 
 export const LANDING_IMPACT_TOOLTIP =
-  'Landing G-Force: max of a 20 ms rolling mean on ‖TotalAcceleration‖/g after a 50 Hz low-pass (removes mount chatter); taken from validated landing windows when possible, else prominence-filtered peaks. Not the 10 Hz flight signal.'
+  'Landing G-Force: max of a 20 ms rolling mean on ‖TotalAcceleration‖/g after a 30 Hz low-pass (removes high-frequency chatter). No fixed cap—if you truly sustain high g for 20 ms, that value is reported. Validated landing windows when possible, else prominence-filtered peaks. Not the 10 Hz flight signal.'
 
 export function syncQualityFromPeak(peak: number): { label: string; blurb: string } {
   if (peak > 0.6)
