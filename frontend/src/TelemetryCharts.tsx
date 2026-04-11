@@ -10,8 +10,10 @@ import {
   mapNumericColumn,
   orientationRadAt,
   telemetryLen,
+  vzDisplaySeries,
 } from './telemetryAccess'
 import type { ComparisonPayload, RunResult, TelemetryPoint } from './types'
+import { VZ_DISPLAY_CMAX, VZ_DISPLAY_CMIN } from './vzDisplayConstants'
 
 const PLOT_PAPER = '#fafbfc'
 const PLOT_BG = '#ffffff'
@@ -71,6 +73,35 @@ function distanceOverlayShapes(runs: RunResult[], activeDisplayM: number | null)
 
 const RAD_TO_DEG = 180 / Math.PI
 const AXIS_LINE_COLORS = ['#2563eb', '#15803d', '#7c3aed'] as const
+
+/** Plotly scatter `line.color` cannot be a numeric array + colorscale (stroke breaks → blank chart). */
+const ALT_VZ_MARKERS_MAX = 1200
+
+function subseriesStride(
+  x: number[],
+  y: number[],
+  z: number[],
+  maxPts: number,
+): { x: number[]; y: number[]; z: number[] } {
+  const n = x.length
+  if (n === 0) return { x: [], y: [], z: [] }
+  const stride = Math.max(1, Math.ceil(n / maxPts))
+  const ox: number[] = []
+  const oy: number[] = []
+  const oz: number[] = []
+  for (let i = 0; i < n; i += stride) {
+    ox.push(x[i]!)
+    oy.push(y[i]!)
+    oz.push(z[i]!)
+  }
+  const last = n - 1
+  if (ox.length === 0 || ox[ox.length - 1] !== x[last]) {
+    ox.push(x[last]!)
+    oy.push(y[last]!)
+    oz.push(z[last]!)
+  }
+  return { x: ox, y: oy, z: oz }
+}
 
 /** Skip redundant setState when Plotly re-fires hover on the same distance (~cm-level). */
 const CHART_HOVER_DIST_EPS_M = 0.02
@@ -160,114 +191,210 @@ export function TelemetryCharts({
     [onActiveDisplayM],
   )
 
-  const n = runs.length
-  const lineTracesPerChart = n
+  const lineTracesPerChart = runs.length
+  const altitudeChartTraceCount = 2 * runs.length
 
-  const altitudeData = runs.flatMap((run, ri) => {
-    const tel = run.telemetry
-    const x = distanceSeries(tel)
-    const raw = altitudeChartSeries(tel)
-    const y =
-      normalizeElevation && raw.length
-        ? raw.map((h) => h - (raw[0] ?? 0))
-        : raw
-    const color = run.color ?? (ri === 0 ? '#0072B2' : '#D55E00')
-    return [
-      {
-        x,
-        y,
-        type: 'scatter' as const,
-        mode: 'lines' as const,
-        name: run.label ?? `Run ${ri + 1}`,
-        line: { color, width: 2 },
-      },
-    ]
-  })
+  /**
+   * react-plotly compares layout/data by reference; new objects every render force Plotly.react
+   * on every parent paint and can race hover → fullLayout._has is not a function / broken unhover.
+   */
+  const chartFigures = useMemo(() => {
+    const n = runs.length
+    const altitudeData = runs.flatMap((run, ri) => {
+      const tel = run.telemetry
+      const x = distanceSeries(tel)
+      const raw = altitudeChartSeries(tel)
+      const y =
+        normalizeElevation && raw.length
+          ? raw.map((h) => h - (raw[0] ?? 0))
+          : raw
+      const vzForLine = vzDisplaySeries(tel)
+      const lineColor = run.color ?? AXIS_LINE_COLORS[ri % AXIS_LINE_COLORS.length]
+      const { x: xm, y: ym, z: zm } = subseriesStride(x, y, vzForLine, ALT_VZ_MARKERS_MAX)
+      const vzMarkerColorbar =
+        ri === 0
+          ? {
+              colorbar: {
+                title: { text: 'Vz (m/s)', font: { color: PLOT_TEXT, size: 11 } },
+                tickfont: { color: PLOT_TEXT, size: 10 },
+                x: 1.02,
+                thickness: 14,
+                outlinewidth: 0,
+                bgcolor: 'rgba(255,255,255,0.85)',
+              },
+            }
+          : {}
+      return [
+        {
+          x,
+          y,
+          type: 'scatter' as const,
+          mode: 'lines' as const,
+          name: run.label ?? `Run ${ri + 1}`,
+          legendgroup: `alt-${ri}`,
+          line: { color: lineColor, width: 2.5 },
+        },
+        {
+          x: xm,
+          y: ym,
+          type: 'scatter' as const,
+          mode: 'markers' as const,
+          name: '',
+          legendgroup: `alt-${ri}`,
+          showlegend: false,
+          hoverinfo: 'skip' as const,
+          marker: {
+            size: 4,
+            color: zm,
+            colorscale: 'RdBu',
+            cmin: VZ_DISPLAY_CMIN,
+            cmax: VZ_DISPLAY_CMAX,
+            showscale: ri === 0,
+            line: { width: 0 },
+            ...vzMarkerColorbar,
+          },
+        },
+      ]
+    })
 
-  const vzData = runs.flatMap((run, ri) => {
-    const tel = run.telemetry
-    const x = distanceSeries(tel)
-    const y = mapNumericColumn(tel, 'vz_m_s')
-    const color = run.color ?? (ri === 0 ? '#0072B2' : '#D55E00')
-    return [
-      {
-        x,
-        y,
-        type: 'scatter' as const,
-        mode: 'lines' as const,
-        name: run.label ?? `Run ${ri + 1}`,
-        line: { color, width: 2 },
-        showlegend: false,
-      },
-    ]
-  })
+    const vzData = runs.flatMap((run, ri) => {
+      const tel = run.telemetry
+      const x = distanceSeries(tel)
+      const y = vzDisplaySeries(tel)
+      const color = run.color ?? (ri === 0 ? '#0072B2' : '#D55E00')
+      return [
+        {
+          x,
+          y,
+          type: 'scatter' as const,
+          mode: 'lines' as const,
+          name: run.label ?? `Run ${ri + 1}`,
+          line: { color, width: 2 },
+          showlegend: false,
+        },
+      ]
+    })
 
-  const tlen = runs.reduce((s, r) => s + telemetryLen(r.telemetry), 0)
-  const brakeSig = runs.map((r) => (r.braking_intervals_m ?? []).length).join(',')
-  const vzCap =
-    vzClampHighSuggested != null && Number.isFinite(vzClampHighSuggested) && vzClampHighSuggested > 0
-      ? Math.min(45, vzClampHighSuggested)
-      : 40
-  const chartDataRevision = `${n}-${tlen}-${normalizeElevation ? 'rel' : 'abs'}-${brakeSig}-yp${yPercentileLow}-${yPercentileHigh}-vz${vzCap}`
-  const distShapes = distanceOverlayShapes(runs, activeDisplayM)
+    const tlen = runs.reduce((s, r) => s + telemetryLen(r.telemetry), 0)
+    const brakeSig = runs.map((r) => (r.braking_intervals_m ?? []).length).join(',')
+    const vzCap =
+      vzClampHighSuggested != null && Number.isFinite(vzClampHighSuggested) && vzClampHighSuggested > 0
+        ? Math.min(45, vzClampHighSuggested)
+        : 40
+    const chartDataRevision = `${n}-${tlen}-${normalizeElevation ? 'rel' : 'abs'}-${brakeSig}-yp${yPercentileLow}-${yPercentileHigh}-vz${vzCap}-altRdBuMk`
+    const altitudeYRange = robustYAxisRange(collectFiniteYFromTraces(altitudeData), {
+      lowPct: yPercentileLow,
+      highPct: yPercentileHigh,
+      padFraction: 0.06,
+      minSpan: normalizeElevation ? 4 : 25,
+    })
+    const vzYRange = robustYAxisRange(collectFiniteYFromTraces(vzData), {
+      lowPct: yPercentileLow,
+      highPct: yPercentileHigh,
+      padFraction: 0.1,
+      symmetricAroundZero: true,
+      clampHigh: vzCap,
+      minSpan: 2,
+    })
+    const vzSubtitleCap = Number(vzCap.toFixed(2))
 
-  const altitudeYRange = robustYAxisRange(collectFiniteYFromTraces(altitudeData), {
-    lowPct: yPercentileLow,
-    highPct: yPercentileHigh,
-    padFraction: 0.06,
-    minSpan: normalizeElevation ? 4 : 25,
-  })
-  const vzYRange = robustYAxisRange(collectFiniteYFromTraces(vzData), {
-    lowPct: yPercentileLow,
-    highPct: yPercentileHigh,
-    padFraction: 0.1,
-    symmetricAroundZero: true,
-    clampHigh: vzCap,
-    minSpan: 2,
-  })
-
-  const handleAltHover = (ev: PlotMouseEvent) => {
-    const p = ev.points?.[0]
-    if (p?.x == null) return
-    const cn = p.curveNumber
-    if (cn >= 0 && cn < lineTracesPerChart && typeof p.x === 'number') {
-      syncDisplayMFromHover(p.x)
+    return {
+      altitudeData,
+      vzData,
+      altitudeYRange,
+      vzYRange,
+      chartDataRevision,
+      vzSubtitleCap,
+      n,
     }
-  }
+  }, [runs, normalizeElevation, yPercentileLow, yPercentileHigh, vzClampHighSuggested])
 
-  const handleVzHover = (ev: PlotMouseEvent) => {
-    const p = ev.points?.[0]
-    if (p?.x == null) return
-    const cn = p.curveNumber
-    if (cn >= 0 && cn < lineTracesPerChart && typeof p.x === 'number') {
-      syncDisplayMFromHover(p.x)
-    }
-  }
+  const distShapes = useMemo(
+    () => distanceOverlayShapes(runs, activeDisplayM),
+    [runs, activeDisplayM],
+  )
+
+  const altitudeLayout = useMemo(
+    () => ({
+      ...baseLayout,
+      uirevision: 'chart-altitude',
+      margin: { t: 36, r: 24, b: 40, l: 48 },
+      title: {
+        text: normalizeElevation
+          ? 'Relative altitude vs distance · markers = Vz (RdBu −8…+1 m/s); braking bands'
+          : 'Altitude vs distance · markers = Vz (RdBu −8…+1 m/s); braking bands · hover syncs map',
+        font: { color: PLOT_TEXT, size: 14 },
+      },
+      xaxis: { ...baseLayout.xaxis, title: { text: 'Distance (m)' } },
+      yaxis: {
+        ...baseLayout.yaxis,
+        title: { text: normalizeElevation ? 'Δ altitude (m)' : 'Altitude (m)' },
+        ...(chartFigures.altitudeYRange ? { range: chartFigures.altitudeYRange } : {}),
+      },
+      showlegend: chartFigures.n > 1,
+      datarevision: chartFigures.chartDataRevision,
+      shapes: distShapes,
+    }),
+    [chartFigures, distShapes, normalizeElevation],
+  )
+
+  const vzLayout = useMemo(
+    () => ({
+      ...baseLayout,
+      uirevision: 'chart-vz',
+      margin: { t: 28, r: 24, b: 40, l: 48 },
+      title: {
+        text: 'Display Vz vs distance (0.5 Hz LPF + 1.5s SG; red/orange bands = braking)',
+        font: { color: PLOT_TEXT, size: 14 },
+        subtitle: {
+          text: `Y-axis symmetric: ~${yPercentileLow}th–${yPercentileHigh}th percentile on smoothed Vz (±${chartFigures.vzSubtitleCap} m/s cap when available); spikes may clip`,
+          font: { size: 10, color: '#64748b' },
+        },
+      },
+      xaxis: { ...baseLayout.xaxis, title: { text: 'Distance (m)' } },
+      yaxis: {
+        ...baseLayout.yaxis,
+        title: { text: 'Vz (m/s)' },
+        ...(chartFigures.vzYRange ? { range: chartFigures.vzYRange } : {}),
+      },
+      showlegend: false,
+      datarevision: chartFigures.chartDataRevision,
+      shapes: distShapes,
+    }),
+    [chartFigures, distShapes, yPercentileLow, yPercentileHigh],
+  )
+
+  const handleAltHover = useCallback(
+    (ev: PlotMouseEvent) => {
+      const p = ev.points?.[0]
+      if (p?.x == null) return
+      const cn = p.curveNumber
+      if (cn >= 0 && cn < altitudeChartTraceCount && typeof p.x === 'number') {
+        syncDisplayMFromHover(p.x)
+      }
+    },
+    [altitudeChartTraceCount, syncDisplayMFromHover],
+  )
+
+  const handleVzHover = useCallback(
+    (ev: PlotMouseEvent) => {
+      const p = ev.points?.[0]
+      if (p?.x == null) return
+      const cn = p.curveNumber
+      if (cn >= 0 && cn < lineTracesPerChart && typeof p.x === 'number') {
+        syncDisplayMFromHover(p.x)
+      }
+    },
+    [lineTracesPerChart, syncDisplayMFromHover],
+  )
+
+  const { altitudeData, vzData, chartDataRevision } = chartFigures
 
   return (
     <div className="charts-stack">
       <Plot
         data={altitudeData}
-        layout={{
-          ...baseLayout,
-          uirevision: 'chart-altitude',
-          margin: { t: 36, r: 24, b: 40, l: 48 },
-          title: {
-            text: normalizeElevation
-              ? 'Relative altitude vs distance (red/orange = braking along trail)'
-              : 'Altitude vs distance (red/orange bands = braking; hover syncs map)',
-            font: { color: PLOT_TEXT, size: 14 },
-          },
-          xaxis: { ...baseLayout.xaxis, title: { text: 'Distance (m)' } },
-          yaxis: {
-            ...baseLayout.yaxis,
-            title: { text: normalizeElevation ? 'Δ altitude (m)' : 'Altitude (m)' },
-            ...(altitudeYRange ? { range: altitudeYRange } : {}),
-          },
-          showlegend: n > 1,
-          datarevision: chartDataRevision,
-          shapes: distShapes,
-        }}
+        layout={altitudeLayout}
         config={plotlyInteractionConfig}
         style={{ width: '100%', height: 320 }}
         onHover={handleAltHover}
@@ -275,28 +402,7 @@ export function TelemetryCharts({
 
       <Plot
         data={vzData}
-        layout={{
-          ...baseLayout,
-          uirevision: 'chart-vz',
-          margin: { t: 28, r: 24, b: 40, l: 48 },
-          title: {
-            text: 'Vertical velocity vs distance (red/orange bands = braking)',
-            font: { color: PLOT_TEXT, size: 14 },
-            subtitle: {
-              text: `Y-axis symmetric: ~${yPercentileLow}th–${yPercentileHigh}th percentile on Vz (±${vzCap} m/s cap from data when available); spikes may clip`,
-              font: { size: 10, color: '#64748b' },
-            },
-          },
-          xaxis: { ...baseLayout.xaxis, title: { text: 'Distance (m)' } },
-          yaxis: {
-            ...baseLayout.yaxis,
-            title: { text: 'Vz (m/s)' },
-            ...(vzYRange ? { range: vzYRange } : {}),
-          },
-          showlegend: false,
-          datarevision: chartDataRevision,
-          shapes: distShapes,
-        }}
+        layout={vzLayout}
         config={plotlyInteractionConfig}
         style={{ width: '100%', height: 240 }}
         onHover={handleVzHover}

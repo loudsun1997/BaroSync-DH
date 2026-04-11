@@ -3,10 +3,14 @@
 from __future__ import annotations
 
 import io
+import json
 import logging
+import os
 import re
+import secrets
 import zipfile
 from concurrent.futures import ProcessPoolExecutor
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Callable
 
@@ -49,6 +53,85 @@ from app.processing.sync import interp_gps_to_master
 _log = logging.getLogger(__name__)
 
 RUN_COLORS = ["#0072B2", "#D55E00", "#009E73", "#CC79A7", "#E69F00"]
+
+_REPO_ROOT = Path(__file__).resolve().parents[3]
+
+
+def _calc_export_enabled() -> bool:
+    v = os.environ.get("BAROSYNC_CALC_EXPORT", "1").strip().lower()
+    return v not in ("0", "false", "no", "off")
+
+
+def _to_jsonable(x: Any) -> Any:
+    if isinstance(x, dict):
+        return {str(k): _to_jsonable(v) for k, v in x.items()}
+    if isinstance(x, (list, tuple)):
+        return [_to_jsonable(v) for v in x]
+    if isinstance(x, (np.integer, np.int64, np.int32, np.uint64, np.uint32)):
+        return int(x)
+    if isinstance(x, (np.floating, np.float64, np.float32)):
+        xf = float(x)
+        return xf if np.isfinite(xf) else None
+    if isinstance(x, np.ndarray):
+        return _to_jsonable(x.tolist())
+    if isinstance(x, (np.bool_,)):
+        return bool(x)
+    if isinstance(x, float):
+        return x if np.isfinite(x) else None
+    if isinstance(x, (str, int, bool)) or x is None:
+        return x
+    return str(x)
+
+
+def save_calculated_session_exports(
+    procs: list[pd.DataFrame],
+    *,
+    tag: str = "session",
+    run_labels: list[str] | None = None,
+    run_sources: list[str] | None = None,
+) -> Path | None:
+    """
+    Write full-rate calculated DataFrames as plain CSV plus meta JSON per run under
+    <repo>/calculated_exports/<UTC>_<tag>_<hex>/. Disable with BAROSYNC_CALC_EXPORT=0.
+    """
+    if not _calc_export_enabled() or not procs:
+        return None
+    out_root = _REPO_ROOT / "calculated_exports"
+    stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+    sub = out_root / f"{stamp}_{tag}_{secrets.token_hex(3)}"
+    sub.mkdir(parents=True, exist_ok=True)
+    for i, proc in enumerate(procs):
+        lab: str | None = None
+        if run_labels and i < len(run_labels):
+            lab = str(run_labels[i])
+        elif run_sources and i < len(run_sources):
+            lab = str(run_sources[i])
+        safe = re.sub(r"[^\w\-.]+", "_", (lab or f"run_{i}"))[:64]
+        stem = f"{i:02d}_{safe}"
+        csv_path = sub / f"{stem}_full.csv"
+        proc.to_csv(csv_path, index=False)
+        meta: dict[str, Any] = {
+            "stem": stem,
+            "run_index": i,
+            "label": lab,
+            "n_rows": int(len(proc)),
+            "columns": [str(c) for c in proc.columns],
+            "dataframe_attrs": _to_jsonable(dict(proc.attrs)),
+            "viz_hints": _to_jsonable(compute_viz_hints(proc)),
+        }
+        with (sub / f"{stem}_meta.json").open("w", encoding="utf-8") as f:
+            json.dump(meta, f, indent=2)
+    (sub / "README.txt").write_text(
+        "BaroSync calculated export\n"
+        "----------------------------\n"
+        "*_full.csv  — plain CSV, full merged/proc DataFrame (open in Excel / Numbers / editor).\n"
+        "              Vz columns include vz_m_s, vz_smooth_m_s (display), altitude_m, altitude_smooth_m, …\n"
+        "*_meta.json — row count, column names, DataFrame attrs (e.g. mtb_stats), viz_hints.\n"
+        "Disable writes: environment variable BAROSYNC_CALC_EXPORT=0\n",
+        encoding="utf-8",
+    )
+    _log.info("Saved calculated telemetry export to %s", sub)
+    return sub
 
 # Frontend charts/maps do not need full 100 Hz; decimate before column export to cut JSON build time and payload size.
 TELEMETRY_EXPORT_MAX_HZ = 20.0
@@ -129,7 +212,12 @@ def process_highfreq_frame(
     fs = estimate_sample_rate_hz(merged["unix_ns"].to_numpy())
     merged = apply_virtual_level_calibration(merged, fs)
 
+    alt_for_vz: np.ndarray | None = None
+
     if "pressure_mbar" in merged.columns:
+        # Vz uses this snapshot: static hypsometric altitude only. Bernoulli ties pressure to GPS speed;
+        # d|v|/dt injects spurious vertical rate (slow descents often read as uphill on the map).
+        alt_for_vz = merged["altitude_m"].to_numpy(dtype=np.float64).copy()
         p = merged["pressure_mbar"].to_numpy(dtype=np.float64)
         v = merged["speed_m_s"].to_numpy(dtype=np.float64)
         alt_mean = float(np.nanmean(hypsometric_altitude_m(p)))
@@ -147,9 +235,11 @@ def process_highfreq_frame(
         pr_alt = merged["altitude_from_pressure_m"].to_numpy(dtype=np.float64)
         merged["sanity_pressure_minus_app_m"] = pr_alt - app
 
-    # Vz must track barometric vertical motion. The GPS low-frequency anchor below is slow-moving;
-    # its time derivative can dominate when baro descent is gentle, wrongly coloring slow descents as uphill.
-    alt_for_vz = merged["altitude_m"].to_numpy(dtype=np.float64).copy()
+    # No pressure path: use current altitude (e.g. app relative) before GPS anchor.
+    if alt_for_vz is None:
+        alt_for_vz = merged["altitude_m"].to_numpy(dtype=np.float64).copy()
+
+    # Display altitude below includes GPS low-frequency anchor; Vz does not (see alt_for_vz).
 
     if "gps_altitude_m" in merged.columns:
         gpi = merged["gps_altitude_m"].to_numpy(dtype=np.float64)
@@ -251,6 +341,13 @@ def process_highfreq_frame(
     vz_series = pd.Series(merged["vz_m_s"].to_numpy(dtype=np.float64))
     win_vz = max(3, int(fs * 0.5))
     merged["vz_rolling_std"] = vz_series.rolling(win_vz, center=True, min_periods=1).std().to_numpy(dtype=np.float64)
+    # Display-only: heavy LPF + SG kills suspension-band chatter for map / elevation heat profile (MTB uses vz_m_s).
+    vz_lp_vis = butterworth_lowpass(
+        merged["vz_m_s"].to_numpy(dtype=np.float64), fs_hz=fs, cutoff_hz=0.5, order=2
+    )
+    merged["vz_smooth_m_s"] = savgol_smooth_series(
+        vz_lp_vis, fs_hz=fs, window_s=1.5, polyorder=2
+    )
     merged = apply_mtb_features(
         merged,
         fs,
@@ -268,6 +365,7 @@ def _telemetry_export_column_names(df: pd.DataFrame) -> list[str]:
         "altitude_m",
         "altitude_smooth_m",
         "vz_m_s",
+        "vz_smooth_m_s",
         "speed_m_s",
         "distance_m",
         "time_s",
@@ -525,6 +623,18 @@ def process_session_csv_items(
 
     # Multi-lap Δt and overlay alignment use barometer cross-correlation + start gate (POST /align-baro).
     comparison: dict[str, Any] | None = None
+
+    if _calc_export_enabled():
+        try:
+            labs = [ordinal_run_label(i) for i in range(n)]
+            save_calculated_session_exports(
+                procs,
+                tag="session",
+                run_labels=labs,
+                run_sources=run_source_stems,
+            )
+        except Exception:
+            _log.exception("calculated_exports write failed")
 
     _report_progress(progress, "Ready", 99)
     return {"runs": runs, "comparison": comparison, "run_count": n}

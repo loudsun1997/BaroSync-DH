@@ -1,4 +1,5 @@
 logs/
+calculated_exports/
 backend/.venv/
 __pycache__/
 *.py[cod]

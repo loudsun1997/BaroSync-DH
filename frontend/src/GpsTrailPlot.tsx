@@ -5,8 +5,16 @@ import { plotlyInteractionConfig } from './plotlyConfig'
 import { Plot } from './plotlyFactory'
 import { distanceSeries, interpAlongDistance, nearestIndexForDistanceM } from './distanceUtils'
 import { gateLineFromMeta, gateLineFromPreview, nearestIndexOnTrail, perpendicularGateLonLat } from './gateGeometry'
-import { latAt, lonAt, numAt, telemetryLen, telemetryLonLatArrays } from './telemetryAccess'
+import {
+  latAt,
+  lonAt,
+  numAt,
+  telemetryLen,
+  telemetryLonLatArrays,
+  vzDisplayValueAt,
+} from './telemetryAccess'
 import type { AlignmentMeta, ComparisonPayload, GatePreview, RunResult, TrailColorMetric } from './types'
+import { VZ_DISPLAY_CMAX, VZ_DISPLAY_CMIN } from './vzDisplayConstants'
 
 /** Pooled server hints when every run has them (fair color scale across laps). */
 function pooledMapColorBoundsFromServer(
@@ -73,7 +81,7 @@ function metricZ(
         break
       case 'vz':
       default:
-        z[i] = numAt(tel, 'vz_m_s', i)
+        z[i] = vzDisplayValueAt(tel, i) ?? 0
         break
     }
   }
@@ -116,7 +124,7 @@ function mapHintForMetric(metric: TrailColorMetric): string {
       return 'Colors show estimated lean angle from gravity in the bike frame.'
     case 'vz':
     default:
-      return 'Colors show barometer vertical velocity (uphill vs downhill); limits use full-rate server hints when present, else ~1st–99th percentile on the trail data (padding + min span).'
+      return 'Colors show display Vz (0.5 Hz LPF + 1.5s SG on baro vertical rate). RdBu scale −8…+1 m/s (clips); Bernoulli is not in Vz.'
   }
 }
 
@@ -144,6 +152,15 @@ function lonLatLines(lat: unknown, lon: unknown): string {
   const lo = typeof lon === 'number' ? lon : Number(lon)
   if (!Number.isFinite(la) || !Number.isFinite(lo)) return ''
   return `<br>lat ${la.toFixed(6)}<br>lon ${lo.toFixed(6)}`
+}
+
+/** Per-sample Vz for custom map tooltip (inspect baro vertical velocity at hover index). */
+function vzTooltipFragment(tel: RunResult['telemetry'], i: number): string {
+  const v = vzDisplayValueAt(tel, i)
+  if (v != null) {
+    return `<br>Vz ${v.toFixed(2)} m/s`
+  }
+  return '<br>Vz —'
 }
 
 /** Rich hover line: ordinal lap name + optional ZIP stem (same on every point of the trace). */
@@ -259,17 +276,7 @@ function trailMapColorBounds(allZ: number[], metric: TrailColorMetric): [number,
     case 'g':
       return [0.5, 4.0]
     case 'vz':
-      // Wider than p2–p98 + tiny minSpan: baro Vz is noisy; a ~6 m/s window saturates most of the lap.
-      return (
-        robustColorScaleRange(allZ, {
-          lowPct: 1,
-          highPct: 99,
-          padFraction: 0.14,
-          minSpan: 8,
-          clampLow: -45,
-          clampHigh: 45,
-        }) ?? [-14, 14]
-      )
+      return [VZ_DISPLAY_CMIN, VZ_DISPLAY_CMAX]
     case 'variance':
       return robustColorScaleRange(allZ, { lowPct: 2, highPct: 98, minSpan: 0.05, clampLow: 0, clampHigh: 12 })
     case 'jerk':
@@ -311,7 +318,7 @@ function colorscaleFor(metric: TrailColorMetric): string | [number, string][] {
       return 'Viridis'
     case 'vz':
     default:
-      return 'RdYlBu'
+      return 'RdBu'
   }
 }
 
@@ -392,27 +399,20 @@ export function GpsTrailPlot({
   const yaxisRange = gpsView ? gpsView.rangeLat : undefined
   const geoAspect = gpsView?.geoAspect ?? 1.2
 
-  const plotData = useMemo(() => {
+  const { plotData, lapMarkerCurveByRun } = useMemo(() => {
     const traces: object[] = []
+    const lapMarkerCurveByRun = runs.map(() => -1)
+    let nextCurve = 0
     runs.forEach((run, ri) => {
       const tel = run.telemetry
       const n = telemetryLen(tel)
       if (n === 0) return
       const { lon, lat } = telemetryLonLatArrays(tel)
-      const baseColor = run.color ?? '#94a3b8'
-      traces.push({
-        x: lon,
-        y: lat,
-        type: 'scattergl',
-        mode: 'lines',
-        name: `${run.label ?? `Run ${ri + 1}`} · path`,
-        line: { color: baseColor, width: 2.5 },
-        opacity: 0.5,
-        hoverinfo: 'skip',
-        showlegend: false,
-      })
       const z = metricZ(run, colorMetric, comparison)
       const hoverHtml = gpsTrailHoverHtml(run, ri)
+      const isFirstLapMarker = nextCurve === 0
+      lapMarkerCurveByRun[ri] = nextCurve
+      nextCurve += 1
       traces.push({
         x: lon,
         y: lat,
@@ -427,25 +427,24 @@ export function GpsTrailPlot({
           size: 5,
           opacity: 0.88,
           line: { width: 0 },
-          showscale: ri === 0,
-          colorbar:
-            ri === 0
-              ? {
-                  title: {
-                    text: colorbarTitle(colorMetric),
-                    font: { color: PLOT_TEXT, size: 11 },
-                    side: 'right',
-                  },
-                  tickfont: { color: PLOT_TEXT, size: 10 },
-                  x: 1.02,
-                  xanchor: 'left',
-                  xpad: 6,
-                  len: 0.7,
-                  thickness: 14,
-                  outlinewidth: 0,
-                  bgcolor: 'rgba(255,255,255,0.85)',
-                }
-              : undefined,
+          showscale: isFirstLapMarker,
+          colorbar: isFirstLapMarker
+            ? {
+                title: {
+                  text: colorbarTitle(colorMetric),
+                  font: { color: PLOT_TEXT, size: 11 },
+                  side: 'right',
+                },
+                tickfont: { color: PLOT_TEXT, size: 10 },
+                x: 1.02,
+                xanchor: 'left',
+                xpad: 6,
+                len: 0.7,
+                thickness: 14,
+                outlinewidth: 0,
+                bgcolor: 'rgba(255,255,255,0.85)',
+              }
+            : undefined,
         },
         text: Array.from({ length: n }, () => hoverHtml),
         hovertemplate: '%{text}<br>lat %{y:.6f}<br>lon %{x:.6f}<extra></extra>',
@@ -541,7 +540,7 @@ export function GpsTrailPlot({
       })
     })
 
-    return traces
+    return { plotData: traces, lapMarkerCurveByRun }
   }, [
     runs,
     colorMetric,
@@ -669,13 +668,13 @@ export function GpsTrailPlot({
 
         const cn = p.curveNumber
         const ll = lonLatLines(p.y, p.x)
-        const heatCurveIndices = runs.map((_, i) => 1 + i * 2)
-        const hi = heatCurveIndices.indexOf(cn)
+        const hi = lapMarkerCurveByRun.findIndex((c) => c === cn)
 
         let html: string | null = null
 
         if (hi >= 0 && p.pointIndex != null) {
-          html = gpsTrailHoverHtml(runs[hi], hi) + ll
+          html =
+            gpsTrailHoverHtml(runs[hi], hi) + ll + vzTooltipFragment(runs[hi].telemetry, p.pointIndex)
           const prev = lastMapHoverSyncRef.current
           if (prev?.runIndex !== hi || prev.pointIndex !== p.pointIndex) {
             lastMapHoverSyncRef.current = { runIndex: hi, pointIndex: p.pointIndex }
@@ -686,7 +685,7 @@ export function GpsTrailPlot({
           }
         } else {
           lastMapHoverSyncRef.current = null
-          let idx = runs.length * 2
+          let idx = lapMarkerCurveByRun.reduce((m, c) => (c >= 0 ? m + 1 : m), 0)
           if (virtualGateLine) {
             if (cn === idx) {
               html =
@@ -715,7 +714,10 @@ export function GpsTrailPlot({
           if (html == null && activeDisplayM != null) {
             for (let ri = 0; ri < runs.length; ri++) {
               if (cn === idx + ri) {
-                html = `Chart scrub — ${gpsTrailHoverHtml(runs[ri], ri)}` + ll
+                const tel = runs[ri].telemetry
+                const ix = nearestIndexForDistanceM(tel, activeDisplayM)
+                html =
+                  `Chart scrub — ${gpsTrailHoverHtml(runs[ri], ri)}` + ll + vzTooltipFragment(tel, ix)
                 break
               }
             }

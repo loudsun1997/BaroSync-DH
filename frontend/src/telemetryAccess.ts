@@ -68,6 +68,23 @@ export function mapNumericColumn(t: RunResult['telemetry'], key: keyof Telemetry
   return out
 }
 
+/** Smoothed display Vz when exported, else raw vz_m_s. */
+export function vzDisplayValueAt(t: RunResult['telemetry'], i: number): number | null {
+  const s = numAt(t, 'vz_smooth_m_s', i, Number.NaN)
+  if (Number.isFinite(s)) return s
+  const r = numAt(t, 'vz_m_s', i, Number.NaN)
+  return Number.isFinite(r) ? r : null
+}
+
+export function vzDisplaySeries(t: RunResult['telemetry']): number[] {
+  const n = telemetryLen(t)
+  const out = new Array<number>(n)
+  for (let i = 0; i < n; i++) {
+    out[i] = vzDisplayValueAt(t, i) ?? 0
+  }
+  return out
+}
+
 /** Altitude for charts: smooth preferred, else raw baro. */
 export function altitudeChartSeries(t: RunResult['telemetry']): number[] {
   const n = telemetryLen(t)

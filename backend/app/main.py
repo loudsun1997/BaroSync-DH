@@ -23,6 +23,7 @@ from app.processing.pipeline import (
     ordinal_run_label,
     process_directory,
     run_dict_from_proc,
+    save_calculated_session_exports,
 )
 from app.logging_setup import attach_file_logging
 from app.upload_jobs import create_job, get_job_public, run_upload_job
@@ -206,6 +207,16 @@ def align_baro(body: AlignBaroRequest):
             status_code=400,
             detail="Too few samples after gate and overlap trim; widen gate radius or check telemetry.",
         )
+
+    try:
+        save_calculated_session_exports(
+            [a2, b2],
+            tag="align_baro",
+            run_labels=[body.run_a_label or "run_A", body.run_b_label or "run_B"],
+            run_sources=[body.run_a_source_name or "", body.run_b_source_name or ""],
+        )
+    except Exception:
+        logger.exception("calculated_exports write failed (align-baro)")
 
     runs: list[dict[str, Any]] = []
     meta_labels = (body.run_a_label, body.run_b_label)

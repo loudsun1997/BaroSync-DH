@@ -12,6 +12,8 @@ export type TelemetryPoint = {
   altitude_m?: number | null
   altitude_smooth_m?: number | null
   vz_m_s?: number | null
+  /** 0.5 Hz LPF + 1.5s SG on vz_m_s; map + elevation heat profile (MTB logic still uses vz_m_s). */
+  vz_smooth_m_s?: number | null
   speed_m_s?: number | null
   distance_m?: number | null
   time_s?: number | null
