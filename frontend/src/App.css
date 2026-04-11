@@ -1,0 +1,483 @@
+* {
+  box-sizing: border-box;
+}
+
+:root {
+  --bg-page: #f4f6f9;
+  --bg-card: #ffffff;
+  --bg-muted: #eef1f6;
+  --text: #1c2333;
+  --text-muted: #5c6578;
+  --border: #d8dee8;
+  --accent: #0d7a4f;
+  --accent-hover: #0a6340;
+  --code-bg: #e8ecf4;
+  --code-text: #0b4f8c;
+  --error-bg: #fdeeee;
+  --error-border: #e85d5d;
+  --error-text: #8b1e1e;
+}
+
+body {
+  margin: 0;
+  font-family: 'IBM Plex Sans', 'Segoe UI', system-ui, sans-serif;
+  background: var(--bg-page);
+  color: var(--text);
+}
+
+.upload-progress {
+  max-width: 28rem;
+  margin: 0 0 1rem;
+  padding: 0.65rem 0.75rem;
+  border-radius: 8px;
+  border: 1px solid var(--border);
+  background: var(--bg-card);
+}
+
+.upload-progress-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  gap: 0.75rem;
+  margin-bottom: 0.4rem;
+  font-size: 0.8125rem;
+}
+
+.upload-progress-step {
+  color: var(--text);
+  font-weight: 500;
+}
+
+.upload-progress-pct {
+  color: var(--text-muted);
+  font-variant-numeric: tabular-nums;
+}
+
+.upload-progress-track {
+  height: 8px;
+  border-radius: 4px;
+  background: var(--bg-muted);
+  overflow: hidden;
+}
+
+.upload-progress-fill {
+  height: 100%;
+  border-radius: 4px;
+  background: linear-gradient(90deg, var(--accent), #12a06e);
+  transition: width 0.2s ease-out;
+}
+
+.app {
+  min-height: 100vh;
+  padding: 1rem 1.25rem 2rem;
+}
+
+.top {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-end;
+  justify-content: space-between;
+  gap: 1rem;
+  margin-bottom: 1rem;
+}
+
+.top h1 {
+  margin: 0;
+  font-size: 1.35rem;
+  font-weight: 600;
+  letter-spacing: -0.02em;
+  color: var(--text);
+}
+
+.sub {
+  margin: 0.35rem 0 0;
+  font-size: 0.875rem;
+  color: var(--text-muted);
+  max-width: 42rem;
+}
+
+.rider-dashboard {
+  margin-top: 0.75rem;
+  max-width: 52rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.85rem;
+}
+
+.rider-cards {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.65rem;
+}
+
+.rider-card {
+  flex: 1 1 12rem;
+  max-width: 20rem;
+  padding: 0.65rem 0.75rem;
+  border-radius: 8px;
+  border: 1px solid var(--border);
+  background: var(--bg-card);
+}
+
+.rider-card-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  gap: 0.5rem;
+  font-size: 0.72rem;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--text-muted);
+}
+
+.rider-card-run {
+  font-weight: 600;
+  color: var(--text);
+  text-transform: none;
+  letter-spacing: 0;
+}
+
+.rider-card-value {
+  margin-top: 0.25rem;
+  font-size: 1.05rem;
+  font-weight: 600;
+  color: var(--text);
+}
+
+.rider-card-blurb {
+  margin: 0.35rem 0 0;
+  font-size: 0.78rem;
+  line-height: 1.35;
+  color: var(--text-muted);
+}
+
+.rider-metric-label {
+  cursor: help;
+  border-bottom: 1px dotted var(--text-muted);
+}
+
+.rider-section-title {
+  margin: 0 0 0.35rem;
+  font-size: 0.8rem;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: var(--text-muted);
+}
+
+.rider-mtb-list {
+  margin: 0;
+  padding-left: 1.1rem;
+  font-size: 0.85rem;
+  line-height: 1.5;
+  color: var(--text);
+}
+
+.rider-mtb-item {
+  margin-bottom: 0.35rem;
+}
+
+.rider-mtb-sep {
+  margin: 0 0.35rem;
+  color: var(--text-muted);
+}
+
+.rider-impact-tag {
+  color: var(--text-muted);
+  font-size: 0.82rem;
+}
+
+.rider-calibration-note {
+  margin: 0;
+  padding: 0.55rem 0.65rem;
+  font-size: 0.82rem;
+  line-height: 1.4;
+  border-radius: 8px;
+  border: 1px solid #fcd9a4;
+  background: #fff8ed;
+  color: #7c4a12;
+}
+
+.rider-insight {
+  margin: 0;
+  font-size: 0.9rem;
+  font-weight: 500;
+  color: var(--text);
+  padding: 0.5rem 0.65rem;
+  border-left: 3px solid var(--accent);
+  background: var(--bg-muted);
+}
+
+.rider-sync-block {
+  font-size: 0.88rem;
+}
+
+.rider-sync-line {
+  margin: 0;
+  color: var(--text);
+  line-height: 1.45;
+}
+
+.dev-details {
+  margin-top: 0.35rem;
+  font-size: 0.8rem;
+  color: var(--text-muted);
+}
+
+.dev-details summary {
+  cursor: pointer;
+  color: var(--code-text);
+  font-weight: 500;
+}
+
+.dev-details-body {
+  margin: 0.4rem 0 0;
+  padding: 0.5rem 0.6rem;
+  font-size: 0.75rem;
+  line-height: 1.4;
+  font-family: ui-monospace, monospace;
+  background: var(--code-bg);
+  border-radius: 6px;
+  overflow-x: auto;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.workflow-callout {
+  margin: 0 0 1rem;
+  padding: 1rem 1.1rem;
+  border-radius: 10px;
+  border: 1px solid var(--border);
+  background: var(--bg-muted);
+  max-width: 52rem;
+}
+
+.workflow-title {
+  margin: 0 0 0.6rem;
+  font-size: 0.95rem;
+  font-weight: 600;
+  color: var(--text);
+}
+
+.workflow-steps {
+  margin: 0 0 0.75rem;
+  padding-left: 1.25rem;
+  font-size: 0.85rem;
+  color: var(--text);
+  line-height: 1.45;
+}
+
+.workflow-steps li {
+  margin-bottom: 0.5rem;
+}
+
+.workflow-steps li:last-child {
+  margin-bottom: 0;
+}
+
+.workflow-status {
+  margin: 0;
+  font-size: 0.8rem;
+  color: var(--text-muted);
+  line-height: 1.4;
+}
+
+.workflow-status-live {
+  color: var(--code-text);
+  font-weight: 600;
+}
+
+.workflow-hint::before {
+  content: ' ';
+}
+
+.workflow-snap-ok {
+  display: block;
+  margin-top: 0.35rem;
+  color: var(--accent);
+  font-weight: 500;
+}
+
+.workflow-preview-err {
+  display: block;
+  margin-top: 0.35rem;
+  color: var(--error-text);
+}
+
+.link-button {
+  background: none;
+  border: none;
+  padding: 0;
+  margin: 0;
+  font: inherit;
+  font-size: inherit;
+  color: var(--code-text);
+  text-decoration: underline;
+  cursor: pointer;
+}
+
+.link-button:hover {
+  color: var(--text);
+}
+
+.toolbar {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 1rem;
+  align-items: center;
+}
+
+.toolbar label {
+  font-size: 0.8rem;
+  color: var(--text-muted);
+}
+
+.toolbar select {
+  margin-left: 0.35rem;
+  background: var(--bg-card);
+  color: var(--text);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 0.35rem 0.5rem;
+}
+
+.upload-btn {
+  position: relative;
+  display: inline-block;
+  background: var(--accent);
+  color: #fff;
+  padding: 0.5rem 1rem;
+  border-radius: 8px;
+  font-size: 0.875rem;
+  font-weight: 600;
+  cursor: pointer;
+  user-select: none;
+}
+
+/* .toolbar label { color: muted } would otherwise win over .upload-btn alone */
+.toolbar label.upload-btn {
+  color: #fff;
+}
+
+.upload-btn:hover {
+  background: var(--accent-hover);
+  color: #fff;
+}
+
+.upload-btn input {
+  position: absolute;
+  inset: 0;
+  opacity: 0;
+  cursor: pointer;
+}
+
+.toolbar button.upload-btn {
+  border: none;
+  font: inherit;
+}
+
+.toolbar .upload-btn.active-gate {
+  background: #0b5c8c;
+}
+
+.toolbar .upload-btn:disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
+}
+
+.error {
+  background: var(--error-bg);
+  border: 1px solid var(--error-border);
+  color: var(--error-text);
+  padding: 0.75rem 1rem;
+  border-radius: 8px;
+  margin-bottom: 1rem;
+  font-size: 0.875rem;
+}
+
+.main-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 1rem;
+  min-height: calc(100vh - 8rem);
+  align-items: start;
+}
+
+@media (max-width: 960px) {
+  .main-grid {
+    grid-template-columns: 1fr;
+  }
+}
+
+.trail-panel {
+  width: 100%;
+  align-self: start;
+  border-radius: 12px;
+  overflow: hidden;
+  border: 1px solid var(--border);
+  background: var(--bg-card);
+  box-shadow: 0 1px 3px rgba(28, 35, 51, 0.06);
+}
+
+/* Geographic aspect + tight axis range — map height follows trail shape, not the chart column */
+.trail-panel .gps-map-aspect-wrap {
+  position: relative;
+  width: 100%;
+  min-height: 280px;
+}
+
+/* Plotly’s default label is anchored to the point and blocks the trail; we use a cursor-following tip instead */
+.trail-panel .gps-map-aspect-wrap .hoverlayer {
+  display: none !important;
+}
+
+.trail-panel .gps-cursor-tooltip {
+  position: fixed;
+  z-index: 50;
+  max-width: min(320px, calc(100vw - 24px));
+  padding: 0.45rem 0.6rem;
+  border-radius: 8px;
+  font-size: 0.8rem;
+  line-height: 1.35;
+  color: #0f172a;
+  background: rgba(255, 255, 255, 0.96);
+  border: 1px solid rgba(30, 41, 59, 0.18);
+  box-shadow: 0 4px 18px rgba(15, 23, 42, 0.12);
+  pointer-events: none;
+}
+
+.chart-panel {
+  border-radius: 12px;
+  overflow: auto;
+  border: 1px solid var(--border);
+  background: var(--bg-card);
+  padding: 0.5rem;
+  box-shadow: 0 1px 3px rgba(28, 35, 51, 0.06);
+}
+
+.charts-stack {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+}
+
+.charts-stack .sensor-section-title {
+  margin: 0.85rem 0 0.15rem;
+  font-size: 0.9rem;
+  font-weight: 600;
+  color: var(--text-muted);
+}
+
+.hint {
+  color: var(--text-muted);
+  font-size: 0.85rem;
+  margin-top: 2rem;
+}
+
+.hint code {
+  font-size: 0.8rem;
+  color: var(--code-text);
+  background: var(--code-bg);
+  padding: 0.1rem 0.35rem;
+  border-radius: 4px;
+}

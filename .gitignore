@@ -1,0 +1,12 @@
+logs/
+backend/.venv/
+__pycache__/
+*.py[cod]
+.Python
+frontend/node_modules/
+frontend/dist/
+.DS_Store
+*.zip
+.env
+.env.local
+sanity_altitude_vs_speed.png
