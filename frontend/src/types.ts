@@ -17,27 +17,14 @@ export type TelemetryPoint = {
   speed_m_s?: number | null
   distance_m?: number | null
   time_s?: number | null
-  total_accel_magnitude_ms2?: number | null
-  acc_x?: number | null
-  acc_y?: number | null
-  acc_z?: number | null
-  acc_x_filt?: number | null
-  acc_y_filt?: number | null
-  acc_z_filt?: number | null
-  total_acc_x?: number | null
-  total_acc_y?: number | null
-  total_acc_z?: number | null
-  total_acc_x_filt?: number | null
-  total_acc_y_filt?: number | null
-  total_acc_z_filt?: number | null
-  gravity_x_filt?: number | null
-  gravity_y_filt?: number | null
-  gravity_z_filt?: number | null
   pressure_mbar?: number | null
   relative_altitude_app_m?: number | null
   sanity_pressure_minus_app_m?: number | null
   gps_wgs84_anchor_offset_m?: number | null
   gps_wgs84_residual_m?: number | null
+  mtb_braking_ma_ms2?: number | null
+  mtb_braking_intensity?: number | null
+  mtb_braking_active?: boolean | null
 }
 
 export type BrakingIntervalM = { start_m: number; end_m: number }
@@ -104,14 +91,21 @@ export type RunResult = {
   viz_hints?: VizHints | null
 }
 
+export type DeltaTAlongPath = {
+  distance_m: number[]
+  delta_t_s: number[]
+  t_a_s: number[]
+  t_b_s: number[]
+  /** Per-meter time spread across runs that built the reference (for pace band), when present. */
+  t_reference_sigma_s?: number[] | null
+}
+
 export type ComparisonPayload = {
-  delta_t: {
-    distance_m: number[]
-    delta_t_s: number[]
-    t_a_s: number[]
-    t_b_s: number[]
-  }
+  delta_t: DeltaTAlongPath
   high_delta_distance_m: number[]
+  /** vs canonical: largest time-loss samples for map pins. */
+  pace_loss_distance_m?: number[]
+  pace_vs_reference?: boolean
   lap_a: { distance_m: number[]; altitude_m: number[] }
   lap_b: { distance_m: number[]; altitude_m: number[] }
 }
@@ -177,6 +171,10 @@ export type UploadJobStatus = {
 /** POST /synthesize-baseline — N-run canonical 1D reference (distance-indexed). */
 export type CanonicalReference = {
   distance_m: (number | null)[]
+  /** Median cumulative time vs distance (s from lap start) at each 1D grid point. */
+  t_reference_s?: (number | null)[]
+  /** Std dev of resampled time across runs (pace uncertainty, seconds). */
+  t_reference_sigma_s?: (number | null)[]
   elevation_m: (number | null)[]
   vz_m_s: (number | null)[]
   grade_m_per_m: (number | null)[]
@@ -201,5 +199,3 @@ export type CanonicalReference = {
 export type SynthesizeBaselineResponse = {
   canonical_reference: CanonicalReference
 }
-
-export type TrailColorMetric = 'vz' | 'delta_t' | 'delta_t_pace' | 'vz_lap_compare'

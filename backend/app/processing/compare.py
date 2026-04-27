@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from typing import Any
+
 import numpy as np
 import pandas as pd
 
@@ -99,6 +101,41 @@ def altitude_vs_distance(
     return s, h
 
 
+def delta_t_against_reference(
+    distance_m: np.ndarray,
+    t_reference_s: np.ndarray,
+    run: pd.DataFrame,
+    *,
+    use_time_s_column: bool = True,
+) -> dict[str, list]:
+    """
+    Pace vs canonical: at each shared distance, delta_t = t_run(s) - t_ref(s).
+    `distance_m` and `t_reference_s` are parallel (e.g. canonical 1m grid);
+    the run is resampled onto the distances where it overlaps the reference.
+    """
+    g = np.asarray(distance_m, dtype=np.float64).ravel()
+    tref = np.asarray(t_reference_s, dtype=np.float64).ravel()
+    if len(g) < 2 or len(tref) != len(g):
+        return {"distance_m": [], "delta_t_s": [], "t_a_s": [], "t_b_s": []}
+    s_run, t_run = distance_and_time_for_delta_t(run, use_time_s_column)
+    s_max = float(np.nanmin([np.nanmax(s_run), np.nanmax(g)]))
+    if s_max <= 0 or not np.isfinite(s_max):
+        return {"distance_m": [], "delta_t_s": [], "t_a_s": [], "t_b_s": []}
+    inside = (g >= 0) & (g <= s_max) & np.isfinite(g) & np.isfinite(tref)
+    g2 = g[inside]
+    if len(g2) < 2:
+        return {"distance_m": [], "delta_t_s": [], "t_a_s": [], "t_b_s": []}
+    tref2 = tref[inside]
+    trun2 = resample_time_on_distance_grid(s_run, t_run, g2)
+    delta = trun2 - tref2
+    return {
+        "distance_m": g2.tolist(),
+        "delta_t_s": delta.tolist(),
+        "t_a_s": tref2.tolist(),
+        "t_b_s": trun2.tolist(),
+    }
+
+
 def high_delta_mask(delta_t_s: np.ndarray, window: int = 21, k: float = 2.0) -> np.ndarray:
     """Flag segments where |d(delta_t)/ds| is large (cornering / pace changes)."""
     d = np.asarray(delta_t_s, dtype=np.float64)
@@ -109,3 +146,77 @@ def high_delta_mask(delta_t_s: np.ndarray, window: int = 21, k: float = 2.0) -> 
     med = np.nanmedian(roll)
     mad = np.nanmedian(np.abs(roll - med)) + 1e-9
     return roll > (med + k * mad)
+
+
+def _pace_loss_pin_distances(
+    dlist: np.ndarray,
+    delta: np.ndarray,
+    *,
+    max_pins: int = 8,
+) -> list[float]:
+    """Largest positive Δt samples (time lost vs reference) for map pin placement."""
+    if dlist.size == 0 or delta.size == 0:
+        return []
+    m = (delta > 0.02) & np.isfinite(dlist) & np.isfinite(delta)
+    if not m.any():
+        return []
+    di = dlist[m]
+    de = delta[m]
+    order = np.argsort(-de)[:max_pins]
+    return [float(di[i]) for i in order]
+
+
+def build_pace_vs_reference_payload(
+    run_b: pd.DataFrame,
+    distance_m: np.ndarray,
+    t_reference_s: np.ndarray,
+    ref_elevation_m: np.ndarray,
+    t_reference_sigma_s: np.ndarray | None = None,
+) -> dict[str, Any]:
+    """
+    Full comparison object with delta_t = t_run - t_reference, lap profiles on the shared distance grid.
+    `t_a_s` in delta_t is reference time; `t_b_s` is the run's time; sigma (optional) is time spread across runs
+    that built the reference (per-meter), for UI bands.
+    """
+    g = np.asarray(distance_m, dtype=np.float64).ravel()
+    h_ref = np.asarray(ref_elevation_m, dtype=np.float64).ravel()
+    t_sig = None if t_reference_sigma_s is None else np.asarray(t_reference_sigma_s, dtype=np.float64).ravel()
+    if len(h_ref) != len(g) or (t_sig is not None and len(t_sig) != len(g)):
+        raise ValueError("ref_elevation_m and t_reference_sigma_s must match distance_m length")
+
+    dt = delta_t_against_reference(g, t_reference_s, run_b, use_time_s_column=True)
+    dlist = np.asarray(dt["distance_m"], dtype=np.float64)
+    if dlist.size < 2:
+        return {
+            "delta_t": {**dt, "t_reference_sigma_s": None},
+            "pace_vs_reference": True,
+            "high_delta_distance_m": [],
+            "pace_loss_distance_m": [],
+            "lap_a": {"distance_m": [], "altitude_m": []},
+            "lap_b": {"distance_m": [], "altitude_m": []},
+        }
+
+    s_b, h_b = altitude_vs_distance(run_b, "altitude_smooth_m")
+    h_b_g = resample_time_on_distance_grid(s_b, h_b, dlist)
+    d_arr = np.asarray(dt["delta_t_s"], dtype=np.float64)
+    pin_d = _pace_loss_pin_distances(dlist, d_arr, max_pins=8)
+    mask = high_delta_mask(d_arr, window=21, k=2.0)
+
+    sig_resampled: list[float] | None = None
+    if t_sig is not None and t_sig.size == g.size and dlist.size:
+        sig_resampled = [float(t_sig[(np.abs(g - float(d))).argmin()]) for d in dlist]
+
+    h_a_g: list[float] = []
+    for d in dlist:
+        j = int((np.abs(g - float(d))).argmin())
+        h_a_g.append(float(h_ref[j]) if j < h_ref.size else float("nan"))
+
+    out_dt: dict[str, Any] = {**dt, "t_reference_sigma_s": sig_resampled}
+    return {
+        "delta_t": out_dt,
+        "pace_vs_reference": True,
+        "high_delta_distance_m": dlist[mask].tolist() if dlist.size else [],
+        "pace_loss_distance_m": pin_d,
+        "lap_a": {"distance_m": dlist.tolist(), "altitude_m": h_a_g},
+        "lap_b": {"distance_m": dlist.tolist(), "altitude_m": h_b_g.tolist()},
+    }

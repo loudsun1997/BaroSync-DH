@@ -11,14 +11,15 @@ from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field, ValidationError
 
+import numpy as np
+
 from app.processing.baro_align import (
     align_runs_at_gate_baro,
     build_comparison_payload,
-    preview_gate_snap,
     telemetry_payload_to_dataframe,
     telemetry_records_to_dataframe,
-    telemetry_records_to_dataframe_preview,
 )
+from app.processing.compare import build_pace_vs_reference_payload
 from app.processing.baseline_synthesis import synthesize_canonical_reference
 from app.processing.pipeline import (
     RUN_COLORS,
@@ -80,21 +81,22 @@ class AlignBaroRequest(BaseModel):
     run_b_telemetry: Any
 
 
-class PreviewGateRequest(BaseModel):
-    gate_latitude: float
-    gate_longitude: float
-    gate_radius_m: float = Field(default=20.0, ge=1.0, le=500.0)
-    gate_half_width_m: float = Field(default=12.0, ge=2.0, le=80.0)
-    run_a_telemetry: Any
-    run_b_telemetry: Any
-
-
 class SynthesizeBaselineRequest(BaseModel):
     telemetry_runs: list[Any] = Field(
         min_length=2,
         description="List of processed telemetry payloads, each either row records or a column-oriented telemetry object.",
     )
     distance_step_m: float = Field(default=1.0, gt=0.0, le=10.0)
+
+
+class PaceVsReferenceRequest(BaseModel):
+    """Multiple aligned runs vs canonical 1D reference (or vs a specific run)."""
+
+    runs_telemetry: list[Any]
+    distance_m: list[float]
+    t_reference_s: list[float]
+    t_reference_sigma_s: list[float] | None = None
+    ref_elevation_m: list[float]
 
 
 @app.get("/health")
@@ -113,7 +115,7 @@ def upload_status(job_id: str):
 @app.post("/upload")
 async def upload(
     background_tasks: BackgroundTasks,
-    zip_file: UploadFile | None = File(None, description="Single ZIP (legacy field name)"),
+    zip_file: UploadFile | None = File(None, description="Optional single-ZIP field (same as one file in `files`)"),
     files: list[UploadFile] | None = File(None, description="One or more ZIPs (multi-lap upload)"),
 ):
     multi_pairs: list[tuple[bytes, str]] = []
@@ -157,32 +159,6 @@ async def upload(
 
     background_tasks.add_task(run_job)
     return {"job_id": job_id}
-
-
-@app.post("/preview-gate")
-def preview_gate(body: PreviewGateRequest):
-    """
-    After a map click: show where each lap snapped in GPS, trail heading, and virtual gate line
-    (perpendicular to travel, e.g. E–W if riding north). No baro correlation.
-    """
-    try:
-        df_a = telemetry_records_to_dataframe_preview(body.run_a_telemetry)
-        df_b = telemetry_records_to_dataframe_preview(body.run_b_telemetry)
-    except ValueError as e:
-        logger.exception("preview-gate: bad telemetry payload")
-        raise HTTPException(status_code=400, detail=str(e)) from e
-    try:
-        return preview_gate_snap(
-            df_a,
-            df_b,
-            body.gate_latitude,
-            body.gate_longitude,
-            gate_radius_m=body.gate_radius_m,
-            half_width_m=body.gate_half_width_m,
-        )
-    except ValueError as e:
-        logger.exception("preview-gate: snap failed")
-        raise HTTPException(status_code=400, detail=str(e)) from e
 
 
 @app.post("/align-baro")
@@ -278,6 +254,32 @@ def synthesize_baseline(body: SynthesizeBaselineRequest):
         }
     except ValueError as e:
         logger.exception("synthesize-baseline: synthesis failed")
+        raise HTTPException(status_code=400, detail=str(e)) from e
+
+
+@app.post("/pace-vs-reference")
+def pace_vs_reference(body: PaceVsReferenceRequest):
+    try:
+        dfs = [telemetry_payload_to_dataframe(p, require_vz=True) for p in body.runs_telemetry]
+    except ValueError as e:
+        logger.exception("pace-vs-reference: bad telemetry")
+        raise HTTPException(status_code=400, detail=str(e)) from e
+    try:
+        dist = np.asarray(body.distance_m, dtype=np.float64)
+        tref = np.asarray(body.t_reference_s, dtype=np.float64)
+        href = np.asarray(body.ref_elevation_m, dtype=np.float64)
+        sig: np.ndarray | None = None
+        if body.t_reference_sigma_s is not None and len(body.t_reference_sigma_s) == len(body.distance_m):
+            sig = np.asarray(body.t_reference_sigma_s, dtype=np.float64)
+        return build_pace_vs_reference_payload(
+            dfs,
+            dist,
+            tref,
+            href,
+            t_reference_sigma_s=sig,
+        )
+    except ValueError as e:
+        logger.exception("pace-vs-reference: build failed")
         raise HTTPException(status_code=400, detail=str(e)) from e
 
 

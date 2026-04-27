@@ -22,6 +22,7 @@ from app.processing.dsp import (
     estimate_sample_rate_hz,
     vertical_velocity_m_s,
 )
+from app.processing.compare import distance_and_time_for_delta_t, resample_time_on_distance_grid
 from app.processing.spatial import cumulative_distance_m
 
 try:  # Optional in local dev until backend requirements are installed.
@@ -347,6 +348,21 @@ def synthesize_canonical_reference(
 
     fused = [_prepare_run(df) for df in telemetry_runs]
     grid = _common_grid(fused, ds)
+    t_on_grid: list[np.ndarray] = []
+    for df in telemetry_runs:
+        t_on_grid.append(
+            resample_time_on_distance_grid(
+                *distance_and_time_for_delta_t(
+                    df.sort_values("unix_ns").reset_index(drop=True) if "unix_ns" in df.columns else df,
+                    "time_s" in df.columns,
+                ),
+                grid,
+            )
+        )
+    t_mat = np.vstack(t_on_grid) if t_on_grid else np.empty((0, len(grid)))
+    t_median = np.nanmedian(t_mat, axis=0) if t_mat.size else np.zeros(len(grid), dtype=np.float64)
+    t_time_sigma = np.nanstd(t_mat, axis=0) if t_mat.size else np.zeros(len(grid), dtype=np.float64)
+
     alt_grid = np.vstack([np.interp(grid, r.distance_m, r.altitude_m) for r in fused])
     vz_grid = np.vstack([np.interp(grid, r.distance_m, r.vz_m_s) for r in fused])
 
@@ -372,6 +388,8 @@ def synthesize_canonical_reference(
 
     return {
         "distance_m": _jsonable_float_list(grid),
+        "t_reference_s": _jsonable_float_list(t_median),
+        "t_reference_sigma_s": _jsonable_float_list(t_time_sigma),
         "elevation_m": _jsonable_float_list(canonical_h),
         "vz_m_s": _jsonable_float_list(canonical_vz),
         "grade_m_per_m": _jsonable_float_list(grade),

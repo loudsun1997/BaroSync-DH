@@ -4,15 +4,15 @@ import { createPortal } from 'react-dom'
 import { collectFiniteYFromTraces, robustYAxisRange } from './chartScales'
 import { plotlyDistanceExplorerConfig } from './plotlyConfig'
 import { Plot } from './plotlyFactory'
-import { distanceSeries } from './distanceUtils'
+import { buildDeltaTSlopeTraces, buildVzTonedAltitudeTraces } from './paceChartSegments'
 import {
-  altitudeChartSeries,
-  speedKmhSeries,
-  telemetryLen,
-  vzDisplaySeries,
-} from './telemetryAccess'
+  distanceSeries,
+  interpAlongDistance,
+  interpTelemetryScalarAlongDistance,
+} from './distanceUtils'
+import { altitudeChartSeries, telemetryLen } from './telemetryAccess'
 import { computeTrailSectorsSimple } from './trailSectors'
-import type { ComparisonPayload, RunResult } from './types'
+import type { CanonicalReference, ComparisonPayload, RunResult } from './types'
 
 const PLOT_PAPER = '#fafbfc'
 const PLOT_BG = '#ffffff'
@@ -159,7 +159,7 @@ function distanceMFromAltitudePlotMouse(
 /** Rangeslider redraws the full series; skip above this to keep UI responsive on huge exports. */
 const RANGE_SLIDER_MAX_POINTS = 75_000
 
-type DistanceShellId = 'delta' | 'physio' | 'speed' | 'altitude' | 'vz'
+type DistanceShellId = 'delta' | 'alt'
 
 function DistanceChartShell({
   shellId,
@@ -234,11 +234,17 @@ type Props = {
   activeDisplayM: number | null
   onActiveDisplayM: (m: number | null) => void
   comparison: ComparisonPayload | null
+  /** Run B (pace) display name for live captions. */
+  runLabelB?: string
+  /** Canonical 1D ref for Vz-tinted altitude. */
+  canonicalRef: CanonicalReference | null
+  paceRunIndex?: number
+  /** ~10m window from “pace loss” pin; overrides sector x-range. */
+  distanceFocusRange: [number, number] | null
+  onClearDistanceFocus: () => void
   normalizeElevation: boolean
   yPercentileLow: number
   yPercentileHigh: number
-  /** From backend viz_hints (pooled max across laps); caps symmetric Vz axis before hard ceiling. */
-  vzClampHighSuggested?: number
 }
 
 export function TelemetryCharts({
@@ -246,11 +252,16 @@ export function TelemetryCharts({
   activeDisplayM,
   onActiveDisplayM,
   comparison,
+  runLabelB,
+  canonicalRef,
+  paceRunIndex = 1,
+  distanceFocusRange: distanceFocusRangeProp,
+  onClearDistanceFocus,
   normalizeElevation,
   yPercentileLow,
   yPercentileHigh,
-  vzClampHighSuggested,
 }: Props) {
+  const [paceCaption, setPaceCaption] = useState<string | null>(null)
   const lastSyncedDisplayMRef = useRef<number | null>(null)
   useEffect(() => {
     if (activeDisplayM != null && Number.isFinite(activeDisplayM)) {
@@ -334,218 +345,178 @@ export function TelemetryCharts({
    */
   const chartFigures = useMemo(() => {
     const n = runs.length
+    const paceRef = Boolean(comparison?.pace_vs_reference)
+    const pr = Math.min(Math.max(0, paceRunIndex), Math.max(0, n - 1))
+    const canVz = canonicalRef?.vz_m_s?.length && canonicalRef?.distance_m?.length
+    const doVz = paceRef && canVz
 
-    const physioData = runs.flatMap((run, ri) => {
+    const altData: object[] = []
+    for (let ri = 0; ri < n; ri++) {
+      const run = runs[ri]!
       const tel = run.telemetry
       const x = distanceSeries(tel)
       const raw = altitudeChartSeries(tel)
       const y =
         normalizeElevation && raw.length ? raw.map((h) => h - (raw[0] ?? 0)) : raw
-      const vzForLine = vzDisplaySeries(tel)
       const lineColor = run.color ?? AXIS_LINE_COLORS[ri % AXIS_LINE_COLORS.length]
       const runName = run.label ?? `Run ${ri + 1}`
-      return [
-        {
+
+      if (doVz && ri === pr) {
+        const can = canonicalRef as CanonicalReference
+        const getRunVz = (d: number) => {
+          const a = interpTelemetryScalarAlongDistance(tel, 'vz_smooth_m_s', d)
+          if (a != null && Math.abs(a) > 1e-5) return a
+          return interpTelemetryScalarAlongDistance(tel, 'vz_m_s', d)
+        }
+        altData.push(
+          ...buildVzTonedAltitudeTraces(
+            x,
+            y,
+            { distance_m: can.distance_m, vz_m_s: can.vz_m_s },
+            getRunVz,
+            runName,
+            lineColor,
+          ),
+        )
+      } else {
+        altData.push({
           x,
           y,
           type: 'scatter' as const,
           mode: 'lines' as const,
-          name: '',
-          showlegend: false,
-          legendgroup: `phys-${ri}`,
-          fill: 'tozeroy' as const,
-          fillcolor: 'rgba(148, 163, 184, 0.28)',
-          line: { width: 0 },
-          hoverinfo: 'skip' as const,
-        },
-        {
-          x,
-          y,
-          type: 'scatter' as const,
-          mode: 'lines' as const,
-          name: `${runName} · alt`,
-          legendgroup: `phys-${ri}`,
+          name: `${runName} · altitude`,
+          legendgroup: `alt-${ri}`,
           line: { color: lineColor, width: 1.5 },
-          opacity: 0.9,
+          opacity: 0.95,
           hovertemplate: `<b>${runName}</b><br>dist %{x:.2f} m<br>alt %{y:.2f} m<extra></extra>`,
-        },
-        {
-          x,
-          y: vzForLine,
-          type: 'scatter' as const,
-          mode: 'lines' as const,
-          name: `${runName} · Vz`,
-          yaxis: 'y2' as const,
-          legendgroup: `phys-vz-${ri}`,
-          line: { color: lineColor, width: 2 },
-          showlegend: true,
-          hovertemplate: `<b>${runName}</b><br>dist %{x:.2f} m<br>Vz %{y:.3f} m/s<extra></extra>`,
-        },
-      ]
-    })
-
-    const physioAltTraces = physioData.filter((_, i) => i % 3 === 1)
-    const physioVzTraces = physioData.filter((_, i) => i % 3 === 2)
-
-    const speedData = runs.flatMap((run, ri) => {
-      const tel = run.telemetry
-      const x = distanceSeries(tel)
-      const y = speedKmhSeries(tel)
-      const lineColor = run.color ?? AXIS_LINE_COLORS[ri % AXIS_LINE_COLORS.length]
-      const name = run.label ?? `Run ${ri + 1}`
-      return [
-        {
-          x,
-          y,
-          type: 'scatter' as const,
-          mode: 'lines' as const,
-          name,
-          line: { color: lineColor, width: 2 },
-          hovertemplate: `<b>${name}</b><br>dist %{x:.2f} m<br>speed %{y:.2f} km/h<extra></extra>`,
-        },
-      ]
-    })
+        })
+      }
+    }
 
     const tlen = runs.reduce((s, r) => s + telemetryLen(r.telemetry), 0)
     const brakeSig = runs.map((r) => (r.braking_intervals_m ?? []).length).join(',')
-    const vzCap =
-      vzClampHighSuggested != null && Number.isFinite(vzClampHighSuggested) && vzClampHighSuggested > 0
-        ? Math.min(45, vzClampHighSuggested)
-        : 40
-    const chartDataRevision = `${n}-${tlen}-${normalizeElevation ? 'rel' : 'abs'}-${brakeSig}-yp${yPercentileLow}-${yPercentileHigh}-vz${vzCap}`
-    const physioYRange = robustYAxisRange(collectFiniteYFromTraces(physioAltTraces), {
+    const chartDataRevision = `${n}-${tlen}-${normalizeElevation ? 'rel' : 'abs'}-${brakeSig}-yp${yPercentileLow}-${yPercentileHigh}-vzt${doVz ? 1 : 0}-alt1`
+    const altYRange = robustYAxisRange(collectFiniteYFromTraces(altData as { y?: unknown }[]), {
       lowPct: yPercentileLow,
       highPct: yPercentileHigh,
       padFraction: 0.06,
       minSpan: normalizeElevation ? 4 : 25,
     })
-    const physioY2Range = robustYAxisRange(collectFiniteYFromTraces(physioVzTraces), {
-      lowPct: yPercentileLow,
-      highPct: yPercentileHigh,
-      padFraction: 0.1,
-      symmetricAroundZero: true,
-      clampHigh: vzCap,
-      minSpan: 2,
-    })
-    const speedYRange = robustYAxisRange(collectFiniteYFromTraces(speedData), {
-      lowPct: yPercentileLow,
-      highPct: yPercentileHigh,
-      padFraction: 0.08,
-      minSpan: 3,
-      clampLow: 0,
-    })
-    const vzSubtitleCap = Number(vzCap.toFixed(2))
 
     return {
-      physioData,
-      speedData,
-      physioYRange,
-      physioY2Range,
-      speedYRange,
+      altData,
+      altYRange,
       chartDataRevision,
-      vzSubtitleCap,
       n,
+      altTraceCount: altData.length,
       traceCountTotal: tlen,
     }
-  }, [runs, normalizeElevation, yPercentileLow, yPercentileHigh, vzClampHighSuggested])
+  }, [
+    runs,
+    normalizeElevation,
+    yPercentileLow,
+    yPercentileHigh,
+    comparison?.pace_vs_reference,
+    paceRunIndex,
+    canonicalRef,
+  ])
 
   const distShapes = useMemo(
     () => distanceOverlayShapes(runs, activeDisplayM),
     [runs, activeDisplayM],
   )
 
+  const sectorHighlightShapes = useMemo((): object[] => {
+    if (activeDisplayM == null || !Number.isFinite(activeDisplayM) || trailSectors.length === 0) return []
+    const s = trailSectors.find(
+      (x) => activeDisplayM >= x.d0 - 0.5 && activeDisplayM <= x.d1 + 0.5,
+    )
+    if (!s) return []
+    return [
+      {
+        type: 'rect' as const,
+        xref: 'x' as const,
+        yref: 'paper' as const,
+        x0: s.d0,
+        x1: s.d1,
+        y0: 0,
+        y1: 1,
+        fillcolor: 'rgba(13, 122, 79, 0.12)',
+        line: { width: 0 },
+        layer: 'below' as const,
+      },
+    ]
+  }, [activeDisplayM, trailSectors])
+
   const showXRangeSlider = chartFigures.traceCountTotal < RANGE_SLIDER_MAX_POINTS
 
-  const physioChartTraceCount = chartFigures.n * 3
-  const speedTraceCount = chartFigures.n
+  const effectiveXRange = distanceFocusRangeProp ?? sectorRange
+  const altChartTraceCount = chartFigures.altTraceCount
 
-  const physioLayout = useMemo(
+  const [distanceChartFullscreen, setDistanceChartFullscreen] = useState<DistanceShellId | null>(null)
+
+  const altLayout = useMemo(
     () => ({
       ...baseLayout,
       dragmode: 'zoom' as const,
       hovermode: 'x unified' as const,
-      uirevision: 'chart-physio',
-      margin: { t: 32, r: 58, b: showXRangeSlider ? 56 : 40, l: 52 },
+      uirevision: 'chart-alt',
+      margin: { t: 32, r: 24, b: showXRangeSlider ? 56 : 40, l: 52 },
+      // Match div height to avoid Plotly leaving blank paper when the parent flexes or grid stretches.
+      ...(distanceChartFullscreen === 'alt'
+        ? { autosize: true }
+        : { autosize: false, height: 200 }),
       title: {
         text: normalizeElevation
-          ? 'Altitude (gray) + Vz — relative height · braking bands'
-          : 'Altitude (gray) + Vz on the right — braking bands · move pointer to sync map (leave to clear)',
+          ? 'Altitude — relative to start'
+          : Boolean(comparison?.pace_vs_reference) && canonicalRef?.vz_m_s?.length
+            ? 'Topography (Vz vs ref: blue = faster on descents, red = faster on climbs)'
+            : 'Altitude',
         subtitle: {
-          text: `Vz: ~${yPercentileLow}th–${yPercentileHigh}th · ±${chartFigures.vzSubtitleCap} m/s cap; unified hover + spikeline along distance`,
+          text: `Y-axis: ~${yPercentileLow}th–${yPercentileHigh}th percentile along distance (same as Δt chart)`,
           font: { size: 10, color: '#64748b' },
         },
         font: { color: PLOT_TEXT, size: 14 },
       },
-      xaxis: xaxisDistanceStyle(showXRangeSlider, sectorRange),
+      xaxis: xaxisDistanceStyle(showXRangeSlider, effectiveXRange),
       yaxis: {
         ...baseLayout.yaxis,
         title: { text: normalizeElevation ? 'Δ altitude (m)' : 'Altitude (m)' },
-        ...(chartFigures.physioYRange ? { range: chartFigures.physioYRange } : {}),
-      },
-      yaxis2: {
-        ...baseLayout.yaxis,
-        title: { text: 'Vz (m/s)' },
-        overlaying: 'y' as const,
-        side: 'right' as const,
-        showgrid: false,
-        ...(chartFigures.physioY2Range ? { range: chartFigures.physioY2Range } : {}),
+        ...(chartFigures.altYRange ? { range: chartFigures.altYRange } : {}),
       },
       showlegend: chartFigures.n > 1,
       datarevision: chartFigures.chartDataRevision,
-      shapes: distShapes,
+      shapes: [...distShapes, ...sectorHighlightShapes],
     }),
-    [chartFigures, distShapes, normalizeElevation, showXRangeSlider, yPercentileLow, yPercentileHigh, sectorRange],
+    [
+      chartFigures,
+      distShapes,
+      sectorHighlightShapes,
+      distanceChartFullscreen,
+      normalizeElevation,
+      showXRangeSlider,
+      yPercentileLow,
+      yPercentileHigh,
+      effectiveXRange,
+      comparison?.pace_vs_reference,
+      canonicalRef?.vz_m_s,
+    ],
   )
 
-  const speedLayout = useMemo(
-    () => ({
-      ...baseLayout,
-      dragmode: 'zoom' as const,
-      hovermode: 'x unified' as const,
-      uirevision: 'chart-speed',
-      margin: { t: 28, r: 24, b: showXRangeSlider ? 56 : 40, l: 48 },
-      title: { text: 'Ground speed', font: { color: PLOT_TEXT, size: 14 } },
-      xaxis: xaxisDistanceStyle(showXRangeSlider, sectorRange),
-      yaxis: {
-        ...baseLayout.yaxis,
-        title: { text: 'km/h' },
-        ...(chartFigures.speedYRange ? { range: chartFigures.speedYRange } : {}),
-      },
-      showlegend: chartFigures.n > 1,
-      datarevision: chartFigures.chartDataRevision,
-      shapes: distShapes,
-    }),
-    [chartFigures, distShapes, showXRangeSlider, sectorRange],
-  )
-
-  const handlePhysioHover = useCallback(
+  const handleAltHover = useCallback(
     (ev: PlotMouseEvent) => {
       const pts = ev.points
       if (!pts?.length) return
       for (const p of pts) {
         const cn = p.curveNumber
-        if (cn >= 0 && cn < physioChartTraceCount && p.x != null && typeof p.x === 'number') {
+        if (cn >= 0 && cn < altChartTraceCount && p.x != null && typeof p.x === 'number') {
           syncDisplayMFromHover(p.x)
           break
         }
       }
     },
-    [physioChartTraceCount, syncDisplayMFromHover],
+    [altChartTraceCount, syncDisplayMFromHover],
   )
-
-  const handleSpeedHover = useCallback(
-    (ev: PlotMouseEvent) => {
-      const p = ev.points?.[0]
-      if (p?.x == null) return
-      const cn = p.curveNumber
-      if (cn >= 0 && cn < speedTraceCount && typeof p.x === 'number') {
-        syncDisplayMFromHover(p.x)
-      }
-    },
-    [speedTraceCount, syncDisplayMFromHover],
-  )
-
-  const [distanceChartFullscreen, setDistanceChartFullscreen] = useState<DistanceShellId | null>(null)
 
   useEffect(() => {
     if (!distanceChartFullscreen) return
@@ -563,20 +534,34 @@ export function TelemetryCharts({
     }
   }, [distanceChartFullscreen])
 
-  const { physioData, speedData, chartDataRevision } = chartFigures
+  const { altData, chartDataRevision } = chartFigures
 
   const distanceExplorerHint = showXRangeSlider
-    ? 'Wheel = zoom. Drag on plot = box zoom a region. Toolbar = pan, box zoom, home. Double-click = reset. Strip = scroll window along distance. Sectors above zoom all stacked charts in distance.'
-    : 'Distance strip is off for large uploads. Wheel zoom, toolbar, double-click reset. Sectors zoom distance on all three charts at once.'
+    ? 'Wheel = zoom. Drag on plot = box zoom a region. Toolbar = pan, box zoom, home. Double-click = reset. Strip = scroll window along distance. Sectors above zoom the Δt and altitude charts together.'
+    : 'Distance strip is off for large uploads. Wheel zoom, toolbar, double-click reset. Sectors zoom both distance charts at once.'
 
-  const physioExplorerHint = `${distanceExplorerHint} Move along the physio or speed plot (or the strip) to move map cursors. Leave a plot to clear.`
+  const distChartsHint = `${distanceExplorerHint} Move along a chart (or the strip) to move map cursors. Leave a plot to clear.`
 
-  const physioHeight = distanceChartFullscreen === 'physio' ? '100%' : 220
-  const speedHeight = distanceChartFullscreen === 'speed' ? '100%' : 180
+  const altHeight = distanceChartFullscreen === 'alt' ? '100%' : 200
   const deltaHeight = distanceChartFullscreen === 'delta' ? '100%' : 360
+
+  const paceRef = Boolean(comparison?.pace_vs_reference)
 
   return (
     <div>
+      {paceCaption && (
+        <p className="pace-ghost-caption" role="status" aria-live="polite">
+          {paceCaption}
+        </p>
+      )}
+      {distanceFocusRangeProp && (
+        <p className="pace-pin-zoom-hint" role="status">
+          X-axis: ~10 m around the map time-loss pin.
+          <button type="button" className="pace-pin-zoom-clear" onClick={onClearDistanceFocus}>
+            Clear pin zoom
+          </button>
+        </p>
+      )}
       {trailSectors.length > 0 && (
         <div className="sector-ribbon" role="toolbar" aria-label="Distance sectors">
           <span className="sector-ribbon-label">Sectors (run 1 path)</span>
@@ -590,7 +575,10 @@ export function TelemetryCharts({
                 key={s.id}
                 type="button"
                 className={active ? 'sector-ribbon-pill is-active' : 'sector-ribbon-pill'}
-                onClick={() => setSectorRange([s.d0, s.d1])}
+                onClick={() => {
+                  onClearDistanceFocus()
+                  setSectorRange([s.d0, s.d1])
+                }}
               >
                 {s.label} · {s.d0.toFixed(0)}–{s.d1.toFixed(0)} m
               </button>
@@ -600,6 +588,7 @@ export function TelemetryCharts({
             type="button"
             className="sector-ribbon-clear"
             onClick={() => {
+              onClearDistanceFocus()
               setSectorRange(null)
             }}
           >
@@ -612,19 +601,21 @@ export function TelemetryCharts({
         {comparison && (
           <DistanceChartShell
             shellId="delta"
-            title="Time delta (Δt) along distance — north star"
-            hint={physioExplorerHint}
+            title={paceRef ? 'Pace Navigator (vs reference)' : 'Time delta (Δt) along distance'}
+            hint={distChartsHint}
             fullscreen={distanceChartFullscreen}
             setFullscreen={setDistanceChartFullscreen}
           >
             <DeltaTPlot
               comparison={comparison}
+              runLabelB={runLabelB}
               onActiveDisplayM={syncDisplayMFromHover}
+              onPaceCaption={setPaceCaption}
               yPercentileLow={yPercentileLow}
               yPercentileHigh={yPercentileHigh}
               plotDataRevision={chartDataRevision}
               plotHeight={deltaHeight}
-              xaxisRange={sectorRange}
+              xaxisRange={effectiveXRange}
               showXRangeSlider={showXRangeSlider}
               distShapes={distShapes}
             />
@@ -632,35 +623,19 @@ export function TelemetryCharts({
         )}
 
         <DistanceChartShell
-          shellId="physio"
-          title="Altitude + vertical velocity (shared x)"
-          hint={physioExplorerHint}
+          shellId="alt"
+          title="Altitude"
+          hint={distChartsHint}
           fullscreen={distanceChartFullscreen}
           setFullscreen={setDistanceChartFullscreen}
         >
           <Plot
-            data={physioData}
-            layout={physioLayout}
+            data={altData}
+            layout={altLayout}
             config={plotlyDistanceExplorerConfig}
-            style={{ width: '100%', height: physioHeight }}
+            style={{ width: '100%', height: altHeight }}
             onInitialized={onAltitudePlotInitialized}
-            onHover={handlePhysioHover}
-          />
-        </DistanceChartShell>
-
-        <DistanceChartShell
-          shellId="speed"
-          title="Speed"
-          hint={physioExplorerHint}
-          fullscreen={distanceChartFullscreen}
-          setFullscreen={setDistanceChartFullscreen}
-        >
-          <Plot
-            data={speedData}
-            layout={speedLayout}
-            config={plotlyDistanceExplorerConfig}
-            style={{ width: '100%', height: speedHeight }}
-            onHover={handleSpeedHover}
+            onHover={handleAltHover}
           />
         </DistanceChartShell>
       </div>
@@ -670,7 +645,9 @@ export function TelemetryCharts({
 
 function DeltaTPlot({
   comparison,
+  runLabelB,
   onActiveDisplayM,
+  onPaceCaption,
   yPercentileLow,
   yPercentileHigh,
   plotDataRevision,
@@ -680,7 +657,9 @@ function DeltaTPlot({
   distShapes,
 }: {
   comparison: ComparisonPayload
+  runLabelB?: string
   onActiveDisplayM: (m: number | null) => void
+  onPaceCaption?: (text: string | null) => void
   yPercentileLow: number
   yPercentileHigh: number
   plotDataRevision: string
@@ -689,20 +668,58 @@ function DeltaTPlot({
   showXRangeSlider: boolean
   distShapes: object[]
 }) {
+  const paceRef = Boolean(comparison.pace_vs_reference)
   const xd = comparison.delta_t.distance_m
   const yd = comparison.delta_t.delta_t_s
   const yPos = yd.map((v) => (Number.isFinite(v) && v > 0 ? v : 0))
   const yNeg = yd.map((v) => (Number.isFinite(v) && v < 0 ? v : 0))
   const hiX = comparison.high_delta_distance_m
+  const sig = comparison.delta_t.t_reference_sigma_s
   const hiY = hiX.map((d) => {
     let j = 0
     for (let i = 0; i < xd.length; i++) {
-      if (xd[i] <= d) j = i
+      if (xd[i]! <= d) j = i
     }
     return yd[j] ?? 0
   })
   const dtDataRevision = `${plotDataRevision}-dt${xd.length}-${hiX.length}`
-  const dtTraces = [
+
+  const bandUp: number[] = []
+  const bandDown: number[] = []
+  if (paceRef && sig && sig.length === xd.length) {
+    for (let i = 0; i < xd.length; i++) {
+      const s = sig[i] != null && Number.isFinite(sig[i]!) ? Math.min(3, Math.max(0, Number(sig[i]))) : 0
+      bandUp.push(s)
+      bandDown.push(-s)
+    }
+  }
+  const dtTraces: object[] = []
+  if (paceRef && bandUp.length === xd.length) {
+    dtTraces.push({
+      x: xd,
+      y: bandUp,
+      type: 'scatter' as const,
+      mode: 'lines' as const,
+      name: ' ',
+      showlegend: false,
+      line: { width: 0 },
+      hoverinfo: 'skip' as const,
+    })
+    dtTraces.push({
+      x: xd,
+      y: bandDown,
+      type: 'scatter' as const,
+      mode: 'lines' as const,
+      name: 'Ref. time spread (±1σ across runs)',
+      showlegend: true,
+      line: { width: 0 },
+      fill: 'tonexty' as const,
+      fillcolor: 'rgba(100, 116, 139, 0.18)',
+      hoverinfo: 'skip' as const,
+    })
+  }
+  const labelB = runLabelB?.trim() || 'Run B'
+  dtTraces.push(
     {
       x: xd,
       y: yPos,
@@ -727,46 +744,85 @@ function DeltaTPlot({
       fillcolor: 'rgba(22, 163, 74, 0.2)',
       hoverinfo: 'skip' as const,
     },
-    {
+  )
+  if (paceRef) {
+    dtTraces.push(
+      ...buildDeltaTSlopeTraces(xd, yd, 2, 'Pace gap · slope=section intensity', 'pace-dt'),
+    )
+  } else {
+    dtTraces.push({
       x: xd,
       y: yd,
       type: 'scatter' as const,
       mode: 'lines' as const,
       name: 'Δt (B−A)',
       line: { color: '#9a3412', width: 2 },
-    },
-    {
+    })
+  }
+  if (!paceRef) {
+    dtTraces.push({
       x: hiX,
       y: hiY,
       type: 'scatter' as const,
       mode: 'markers' as const,
       name: 'High pace-change',
       marker: { color: '#ca8a04', size: 8, line: { color: '#fff', width: 1 } },
-    },
-  ]
-  const dtYRange = robustYAxisRange(collectFiniteYFromTraces(dtTraces), {
-    lowPct: yPercentileLow,
-    highPct: yPercentileHigh,
-    padFraction: 0.1,
-    minSpan: 0.5,
-  })
+    })
+  }
+  const dtYRange = paceRef
+    ? robustYAxisRange(
+        (() => {
+          const base = yd.filter((v) => Number.isFinite(v)) as number[]
+          for (const u of bandUp) {
+            if (Number.isFinite(u)) {
+              base.push(u)
+              base.push(-u)
+            }
+          }
+          return base
+        })(),
+        {
+          symmetricAroundZero: true,
+          lowPct: yPercentileLow,
+          highPct: yPercentileHigh,
+          padFraction: 0.1,
+          minSpan: 0.5,
+        },
+      )
+    : robustYAxisRange(collectFiniteYFromTraces(dtTraces), {
+        lowPct: yPercentileLow,
+        highPct: yPercentileHigh,
+        padFraction: 0.1,
+        minSpan: 0.5,
+      })
+  const dtH =
+    typeof plotHeight === 'number' && Number.isFinite(plotHeight) ? Math.round(plotHeight) : 360
+  const deltaPlotSizing =
+    typeof plotHeight === 'string' && plotHeight === '100%'
+      ? { autosize: true as const }
+      : { autosize: false as const, height: dtH }
   return (
     <Plot
       data={dtTraces}
       layout={{
         ...baseLayout,
+        ...deltaPlotSizing,
         dragmode: 'zoom' as const,
         hovermode: 'x unified' as const,
         uirevision: 'chart-delta-t',
         margin: { t: 28, r: 24, b: showXRangeSlider ? 56 : 40, l: 48 },
         title: {
-          text: 'Time delta (lap B vs A) — red = losing, green = gaining vs 0 s',
+          text: paceRef
+            ? 'Pace vs N-run reference — line color = d(Δt)/d(dist): green = saving time, red = losing time fast. Grey band = ±σ. Area fill: behind vs ahead of zero.'
+            : 'Time delta (lap B vs A) — red = losing, green = gaining vs 0 s',
           font: { color: PLOT_TEXT, size: 14 },
         },
         xaxis: xaxisDistanceStyle(showXRangeSlider, xaxisRange),
         yaxis: {
           ...baseLayout.yaxis,
-          title: { text: 'Δt (s)' },
+          title: { text: paceRef ? 'Behind ref (+) / ahead (−) (s)' : 'Δt (s)' },
+          zeroline: true,
+          zerolinewidth: 2,
           ...(dtYRange ? { range: dtYRange } : {}),
         },
         showlegend: true,
@@ -777,7 +833,25 @@ function DeltaTPlot({
       style={{ width: '100%', height: plotHeight }}
       onHover={(ev: PlotMouseEvent) => {
         const p = ev.points?.[0]
-        if (p && typeof p.x === 'number') onActiveDisplayM(p.x)
+        if (p && typeof p.x === 'number') {
+          onActiveDisplayM(p.x)
+          const py = interpAlongDistance(comparison, p.x)
+          if (py == null || !Number.isFinite(py)) return
+          if (paceRef) {
+            onPaceCaption?.(
+              `At ${p.x.toFixed(0)} m: ${labelB} is ${py >= 0 ? '+' : ''}${py.toFixed(2)} s ${
+                py >= 0 ? 'slower' : 'faster'
+              } than the reference baseline (0 s).`,
+            )
+          } else {
+            onPaceCaption?.(
+              `At ${p.x.toFixed(0)} m: ${labelB} is ${py >= 0 ? '+' : ''}${py.toFixed(2)} s vs lap A.`,
+            )
+          }
+        }
+      }}
+      onUnhover={() => {
+        onPaceCaption?.(null)
       }}
     />
   )

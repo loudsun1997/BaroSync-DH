@@ -1,5 +1,5 @@
-import type { ComparisonPayload, RunResult } from './types'
-import { isTelemetryRecords, telemetryLen } from './telemetryAccess'
+import type { ComparisonPayload, RunResult, TelemetryPoint } from './types'
+import { isTelemetryRecords, mapNumericColumn, telemetryLen } from './telemetryAccess'
 
 export function distanceSeries(telemetry: RunResult['telemetry']): number[] {
   if (isTelemetryRecords(telemetry)) {
@@ -55,4 +55,62 @@ export function interpAlongDistance(
   const y0 = yd[lo] ?? 0
   const y1 = yd[hi] ?? 0
   return y0 + t * (y1 - y0)
+}
+
+/** Interpolate a per-sample series (e.g. vz) over cumulative distance. */
+export function interpTelemetryScalarAlongDistance(
+  telemetry: RunResult['telemetry'],
+  key: keyof TelemetryPoint,
+  distM: number,
+): number | null {
+  if (telemetryLen(telemetry) < 1) return null
+  const xd = distanceSeries(telemetry)
+  const yd = mapNumericColumn(telemetry, key)
+  return interpXYAlongDistance(xd, yd, distM)
+}
+
+function interpXYAlongDistance(xd: number[], yd: number[], distM: number): number | null {
+  if (xd.length < 2 || yd.length !== xd.length) return null
+  if (distM <= xd[0]!) return Number.isFinite(yd[0]!) ? yd[0]! : null
+  const lastX = xd[xd.length - 1]!
+  if (distM >= lastX) {
+    const v = yd[yd.length - 1]!
+    return Number.isFinite(v) ? v : null
+  }
+  let lo = 0
+  let hi = xd.length - 1
+  while (hi - lo > 1) {
+    const mid = (lo + hi) >> 1
+    if (xd[mid]! <= distM) lo = mid
+    else hi = mid
+  }
+  const x0 = xd[lo]!
+  const x1 = xd[hi]!
+  const t = x1 > x0 ? (distM - x0) / (x1 - x0) : 0
+  const y0 = yd[lo] ?? 0
+  const y1 = yd[hi] ?? 0
+  if (!Number.isFinite(y0) || !Number.isFinite(y1)) return null
+  return y0 + t * (y1 - y0)
+}
+
+/**
+ * Vertical speed on the canonical 1D grid (median across runs) at distance `distM`.
+ * Ignores null entries on the reference grid.
+ */
+export function interpCanonicalVzMps(
+  distance_m: (number | null)[],
+  vz_m_s: (number | null)[],
+  distM: number,
+): number | null {
+  const dOut: number[] = []
+  const vOut: number[] = []
+  for (let i = 0; i < distance_m.length; i++) {
+    const d = distance_m[i]
+    const v = vz_m_s[i]
+    if (d == null || v == null || !Number.isFinite(d) || !Number.isFinite(v)) continue
+    dOut.push(d)
+    vOut.push(v)
+  }
+  if (dOut.length < 2) return null
+  return interpXYAlongDistance(dOut, vOut, distM)
 }

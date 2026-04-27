@@ -124,7 +124,7 @@ def save_calculated_session_exports(
         "BaroSync calculated export\n"
         "----------------------------\n"
         "*_full.csv  — plain CSV, full merged/proc DataFrame (open in Excel / Numbers / editor).\n"
-        "              Vz columns include vz_m_s, vz_smooth_m_s (display), altitude_m, altitude_smooth_m, …\n"
+        "              Full-rate columns include vz_m_s, altitude_m, IMU, MTB, …; API JSON to the SPA omits Vz (re-derived on /align-baro if needed).\n"
         "*_meta.json — row count, column names, DataFrame attrs (e.g. mtb_stats), viz_hints.\n"
         "Disable writes: environment variable BAROSYNC_CALC_EXPORT=0\n",
         encoding="utf-8",
@@ -264,19 +264,18 @@ def process_highfreq_frame(
     vz = vertical_velocity_m_s(alt_savgol_vz, ns)
     merged["vz_m_s"] = savgol_smooth_series(vz, fs_hz=fs, window_s=0.55, polyorder=2)
 
+    # Filtered IMU (not for baro Vz): fusion + /synthesize-baseline, MTB braking, airtime/lean stats.
     for col in ("acc_x", "acc_y", "acc_z"):
         if col in merged.columns:
             merged[f"{col}_filt"] = butterworth_lowpass(
                 merged[col].to_numpy(dtype=np.float64), fs_hz=fs, cutoff_hz=10.0, order=4
             )
-
     for ax in ("x", "y", "z"):
         gc = f"gravity_{ax}"
         if gc in merged.columns:
             merged[f"{gc}_filt"] = butterworth_lowpass(
                 merged[gc].to_numpy(dtype=np.float64), fs_hz=fs, cutoff_hz=3.0, order=4
             )
-
     for ax in ("x", "y", "z"):
         tc = f"total_acc_{ax}"
         if tc in merged.columns:
@@ -311,42 +310,32 @@ def process_highfreq_frame(
     return merged
 
 
-_IMU_EXPORT_PAT = re.compile(r"^(?:acc|total_acc|gravity)_[xyz](?:_filt)?$")
-
-
 def _telemetry_export_column_names(df: pd.DataFrame) -> list[str]:
-    """Per-sample API columns: core trail + baro/IMU used for synthesis/alignment; omits map-only extras."""
-    head = [
+    """
+    Per-sample API for the SPA: trail + baro altitude + time/distance + braking flags.
+    Vz is omitted from JSON; /align-baro re-derives ``vz_m_s`` from ``altitude_*`` in ``baro_align``.
+
+    Full ``proc`` still computes Vz/IMU in-process for ``apply_mtb_features``; IMU is not sent to the client.
+    """
+    ordered = [
         "unix_ns",
         "latitude",
         "longitude",
         "altitude_m",
         "altitude_smooth_m",
-        "vz_m_s",
-        "vz_smooth_m_s",
         "speed_m_s",
         "distance_m",
         "time_s",
-    ]
-    tail_meta = [
         "pressure_mbar",
         "relative_altitude_app_m",
         "sanity_pressure_minus_app_m",
         "gps_wgs84_anchor_offset_m",
         "gps_wgs84_residual_m",
+        "mtb_braking_ma_ms2",
+        "mtb_braking_intensity",
+        "mtb_braking_active",
     ]
-    out: list[str] = []
-    for c in head + tail_meta:
-        if c in df.columns:
-            out.append(c)
-    for c in sorted(df.columns):
-        if c in out:
-            continue
-        if _IMU_EXPORT_PAT.match(c):
-            out.append(c)
-    if "total_accel_magnitude_ms2" in df.columns and "total_accel_magnitude_ms2" not in out:
-        out.append("total_accel_magnitude_ms2")
-    return out
+    return [c for c in ordered if c in df.columns]
 
 
 def decimate_dataframe_for_export(df: pd.DataFrame, max_hz: float) -> pd.DataFrame:

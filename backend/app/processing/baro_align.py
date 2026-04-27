@@ -8,7 +8,11 @@ import numpy as np
 import pandas as pd
 from scipy.signal import correlate, correlation_lags
 
-from app.processing.dsp import estimate_sample_rate_hz
+from app.processing.dsp import (
+    estimate_sample_rate_hz,
+    savgol_smooth_series,
+    vertical_velocity_m_s,
+)
 from app.processing.mtb_processing import apply_mtb_features
 from app.processing.spatial import cumulative_distance_m, haversine_m
 
@@ -266,6 +270,30 @@ def align_runs_at_gate_baro(
 TelemetryPayload = list[dict[str, Any]] | dict[str, list[Any]]
 
 
+def _inject_vz_m_s_for_alignment_if_missing(df: pd.DataFrame) -> pd.DataFrame:
+    """
+    /upload no longer includes vz in JSON; align-baro reposts that payload. Re-derive
+    Vz from exported altitude (same path as a lightweight pipeline slice).
+    """
+    if "vz_m_s" in df.columns:
+        return df
+    alt: np.ndarray | None = None
+    for col in ("altitude_smooth_m", "altitude_m", "relative_altitude_app_m"):
+        if col in df.columns:
+            alt = df[col].to_numpy(dtype=np.float64)
+            break
+    if alt is None or len(alt) < 2:
+        raise ValueError("Missing vz_m_s: need altitude_smooth_m, altitude_m, or relative_altitude_app_m")
+    ns = df["unix_ns"].to_numpy(dtype=np.float64)
+    fs = float(estimate_sample_rate_hz(ns))
+    if not (np.isfinite(fs) and fs > 0):
+        raise ValueError("Invalid sample rate; cannot derive vz_m_s for alignment")
+    vz = vertical_velocity_m_s(alt, ns)
+    out = df.copy()
+    out["vz_m_s"] = savgol_smooth_series(vz, fs_hz=fs, window_s=0.55, polyorder=2)
+    return out
+
+
 def telemetry_payload_to_dataframe(
     payload: TelemetryPayload,
     *,
@@ -285,49 +313,9 @@ def telemetry_payload_to_dataframe(
     for col in ("unix_ns", "latitude", "longitude"):
         if col not in df.columns:
             raise ValueError(f"Missing {col}")
-    if require_vz and "vz_m_s" not in df.columns:
-        raise ValueError("Missing vz_m_s")
+    if require_vz:
+        df = _inject_vz_m_s_for_alignment_if_missing(df)
     return df.sort_values("unix_ns").reset_index(drop=True)
-
-
-def telemetry_records_to_dataframe_preview(records: TelemetryPayload) -> pd.DataFrame:
-    """Gate snap preview: lat/lon/time only (no Vz required)."""
-    return telemetry_payload_to_dataframe(records, require_vz=False)
-
-
-def preview_gate_snap(
-    df_a: pd.DataFrame,
-    df_b: pd.DataFrame,
-    gate_lat: float,
-    gate_lon: float,
-    gate_radius_m: float = 20.0,
-    half_width_m: float = 12.0,
-) -> dict[str, Any]:
-    """
-    Step-1 feedback: snapped GPS indices/coords on both runs + bearing-based virtual gate on Run A.
-    """
-    if len(df_a) < 2 or len(df_b) < 2:
-        raise ValueError("Each run needs at least two GPS samples")
-    ia = find_gate_index(df_a, gate_lat, gate_lon, gate_radius_m)
-    ib = find_gate_index(df_b, gate_lat, gate_lon, gate_radius_m)
-    gate_lons, gate_lats, bearing_a = gate_perpendicular_at_index(df_a, ia, half_width_m=half_width_m)
-    out: dict[str, Any] = {
-        "gate_index_a": ia,
-        "gate_index_b": ib,
-        "gate_snapped_latitude_a": float(df_a["latitude"].iloc[ia]),
-        "gate_snapped_longitude_a": float(df_a["longitude"].iloc[ia]),
-        "gate_snapped_latitude_b": float(df_b["latitude"].iloc[ib]),
-        "gate_snapped_longitude_b": float(df_b["longitude"].iloc[ib]),
-        "gate_latitude_click": gate_lat,
-        "gate_longitude_click": gate_lon,
-        "gate_radius_m": gate_radius_m,
-    }
-    if bearing_a is not None:
-        out["trail_bearing_deg_clockwise_from_north_a"] = bearing_a
-    if gate_lons is not None and gate_lats is not None:
-        out["gate_line_longitude"] = gate_lons
-        out["gate_line_latitude"] = gate_lats
-    return out
 
 
 def telemetry_records_to_dataframe(records: TelemetryPayload) -> pd.DataFrame:
