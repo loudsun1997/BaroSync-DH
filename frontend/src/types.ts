@@ -208,5 +208,7 @@ export type TrailColorMetric =
   | 'variance'
   | 'jerk'
   | 'delta_t'
+  | 'delta_t_pace'
+  | 'vz_lap_compare'
   | 'braking'
   | 'lean_mtb'

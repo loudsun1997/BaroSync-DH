@@ -68,6 +68,11 @@ export function mapNumericColumn(t: RunResult['telemetry'], key: keyof Telemetry
   return out
 }
 
+/** Ground speed in km/h when `speed_m_s` is present, else 0. */
+export function speedKmhSeries(t: RunResult['telemetry']): number[] {
+  return mapNumericColumn(t, 'speed_m_s').map((mps) => (Number.isFinite(mps) && mps > 0 ? mps * 3.6 : 0))
+}
+
 /** Smoothed display Vz when exported, else raw vz_m_s. */
 export function vzDisplayValueAt(t: RunResult['telemetry'], i: number): number | null {
   const s = numAt(t, 'vz_smooth_m_s', i, Number.NaN)

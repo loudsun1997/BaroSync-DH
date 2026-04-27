@@ -397,10 +397,16 @@ body {
 
 .main-grid {
   display: grid;
-  grid-template-columns: 1fr 1fr;
+  grid-template-columns: minmax(0, 35%) minmax(0, 65%);
   gap: 1rem;
   min-height: calc(100vh - 8rem);
   align-items: start;
+  border-radius: 2px;
+  transition: box-shadow 0.25s ease;
+}
+
+.main-grid--align-snap {
+  box-shadow: 0 0 0 2px var(--accent), 0 8px 28px rgba(13, 122, 79, 0.18);
 }
 
 @media (max-width: 960px) {
@@ -419,6 +425,10 @@ body {
   box-shadow: 0 1px 3px rgba(28, 35, 51, 0.06);
 }
 
+.trail-panel--pre-align {
+  box-shadow: inset 0 0 0 1px rgba(13, 122, 79, 0.35);
+}
+
 /* GPS block: plot + caption (legend lives inside Plotly, below plot area) */
 .trail-panel .gps-map-ui {
   display: flex;
@@ -434,6 +444,12 @@ body {
   color: var(--text-muted);
   background: var(--bg-muted);
   border-top: 1px solid var(--border);
+}
+
+.trail-panel .gps-map-hint-secondary {
+  padding-top: 0.35rem;
+  border-top: 1px dashed var(--border);
+  font-size: 0.78rem;
 }
 
 /* Geographic aspect + tight axis range — map height follows trail shape, not the chart column */
@@ -537,10 +553,222 @@ body {
   color: var(--text-muted);
 }
 
+.vz-compare-summary {
+  margin-bottom: 0.65rem;
+  padding: 0.5rem 0.65rem;
+  border-radius: 8px;
+  border: 1px solid var(--border);
+  background: rgba(241, 245, 249, 0.9);
+}
+
+.vz-compare-summary-title {
+  margin: 0 0 0.35rem;
+  font-size: 0.8rem;
+  font-weight: 600;
+  color: var(--text-muted);
+}
+
+.vz-compare-summary-subhead {
+  margin: 0.5rem 0 0.25rem;
+  font-size: 0.75rem;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--text-muted);
+}
+
+.vz-compare-summary-body,
+.vz-compare-summary-foot,
+.vz-compare-summary-note {
+  margin: 0 0 0.35rem;
+  font-size: 0.78rem;
+  line-height: 1.4;
+  color: var(--text);
+}
+
+.vz-compare-summary-foot {
+  margin-bottom: 0;
+  color: var(--text-muted);
+}
+
+.vz-compare-summary-list {
+  margin: 0 0 0.35rem;
+  padding-left: 1.15rem;
+  font-size: 0.78rem;
+  line-height: 1.45;
+  color: var(--text);
+}
+
+.vz-compare-summary-note {
+  margin-top: 0.35rem;
+  margin-bottom: 0;
+  font-style: italic;
+  color: var(--text-muted);
+}
+
 .charts-stack {
   display: flex;
   flex-direction: column;
   gap: 0.5rem;
+}
+
+.charts-stack--dashboard {
+  gap: 0.75rem;
+}
+
+.sector-ribbon {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.4rem 0.5rem;
+  margin-bottom: 0.5rem;
+  padding: 0.45rem 0.5rem;
+  border-radius: 8px;
+  border: 1px solid var(--border);
+  background: rgba(248, 250, 252, 0.96);
+  font-size: 0.8rem;
+}
+
+.sector-ribbon-label {
+  color: var(--text-muted);
+  font-weight: 600;
+  margin-right: 0.1rem;
+}
+
+.sector-ribbon-pill {
+  font-family: inherit;
+  font-size: 0.75rem;
+  font-weight: 500;
+  padding: 0.3rem 0.5rem;
+  border-radius: 6px;
+  border: 1px solid var(--border);
+  background: #fff;
+  color: var(--text);
+  cursor: pointer;
+}
+
+.sector-ribbon-pill.is-active {
+  border-color: var(--accent);
+  color: #0a5c3a;
+  background: rgba(13, 122, 79, 0.08);
+}
+
+.sector-ribbon-pill:hover {
+  border-color: var(--text-muted);
+}
+
+.sector-ribbon-clear {
+  font-family: inherit;
+  font-size: 0.75rem;
+  margin-left: auto;
+  padding: 0.3rem 0.45rem;
+  border: none;
+  background: none;
+  color: #1d4ed8;
+  cursor: pointer;
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+
+/* Distance plots: full screen + explorer toolbar (see TelemetryCharts) */
+.telemetry-chart-shell {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  gap: 0.35rem;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 0.45rem 0.5rem 0.55rem;
+  background: var(--bg-card);
+}
+
+.telemetry-chart-shell--fullscreen {
+  position: fixed;
+  inset: 0;
+  z-index: 4000;
+  margin: 0;
+  border: none;
+  border-radius: 0;
+  padding: 0.65rem 0.85rem 0.85rem;
+  box-shadow: 0 0 0 1px var(--border);
+  gap: 0.5rem;
+}
+
+.telemetry-chart-shell-header {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.5rem 0.75rem;
+}
+
+.telemetry-chart-shell-label {
+  font-size: 0.78rem;
+  font-weight: 600;
+  color: var(--text-muted);
+  letter-spacing: 0.02em;
+}
+
+.telemetry-chart-shell-btn {
+  font-size: 0.8rem;
+  font-weight: 600;
+  padding: 0.35rem 0.65rem;
+  border-radius: 8px;
+  border: 1px solid var(--border);
+  background: var(--bg-muted);
+  color: var(--text);
+  cursor: pointer;
+  font-family: inherit;
+}
+
+.telemetry-chart-shell-btn:hover {
+  background: var(--bg-card);
+  border-color: var(--text-muted);
+}
+
+.telemetry-chart-shell-btn:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+.telemetry-chart-shell-hint {
+  margin: 0;
+  font-size: 0.72rem;
+  line-height: 1.4;
+  color: var(--text-muted);
+}
+
+.telemetry-chart-shell-body {
+  min-height: 0;
+}
+
+.telemetry-chart-shell--fullscreen .telemetry-chart-shell-body {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+}
+
+.telemetry-chart-shell--fullscreen .telemetry-chart-shell-body .js-plotly-plot {
+  flex: 1;
+  min-height: 280px;
+}
+
+.telemetry-chart-shell--fs-placeholder {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.25rem;
+  padding: 0.55rem 0.65rem;
+  border: 1px dashed var(--border);
+  border-radius: 10px;
+  background: rgba(248, 250, 252, 0.6);
+  font-size: 0.78rem;
+  color: var(--text-muted);
+}
+
+.telemetry-chart-shell-fs-msg {
+  font-weight: 500;
 }
 
 .charts-extra-sensor-toggle {

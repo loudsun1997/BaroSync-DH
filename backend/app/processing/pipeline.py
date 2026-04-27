@@ -19,7 +19,6 @@ ProgressCallback = Callable[[str, int], None]
 import numpy as np
 import pandas as pd
 
-from app.processing.compare import altitude_vs_distance
 from app.processing.constants import STANDARD_GRAVITY_MS2, hypsometric_altitude_m
 from app.processing.dsp import (
     bernoulli_correction_mbar,
@@ -133,8 +132,9 @@ def save_calculated_session_exports(
     _log.info("Saved calculated telemetry export to %s", sub)
     return sub
 
-# Frontend charts/maps do not need full 100 Hz; decimate before column export to cut JSON build time and payload size.
-TELEMETRY_EXPORT_MAX_HZ = 20.0
+# API JSON for the SPA: decimate aggressively so long runs do not freeze the browser.
+# Calculated disk exports (*_full.csv) still use the full-rate ``proc`` DataFrame — not this path.
+TELEMETRY_API_JSON_MAX_HZ = 8.0
 
 # Populated in child processes via ProcessPoolExecutor initializer (avoids pickling aux per task).
 _ctx_aux_pairs: list[tuple[str, pd.DataFrame]] | None = None
@@ -460,7 +460,6 @@ def dataframe_to_telemetry_columns(df: pd.DataFrame) -> dict[str, Any]:
 
 
 def run_dict_from_proc(proc: pd.DataFrame) -> dict[str, Any]:
-    s, h = altitude_vs_distance(proc, "altitude_smooth_m")
     vz = proc["vz_m_s"].to_numpy(dtype=np.float64)
     smoothness = float(1.0 / (float(np.nanstd(vz)) + 1e-6))
     mtb_stats = None
@@ -472,14 +471,16 @@ def run_dict_from_proc(proc: pd.DataFrame) -> dict[str, Any]:
             proc["mtb_braking_active"].to_numpy(dtype=bool),
             proc["distance_m"].to_numpy(dtype=np.float64),
         )
-    proc_telemetry = decimate_dataframe_for_export(proc, TELEMETRY_EXPORT_MAX_HZ)
-    # Full-rate grid (e.g. ~100 Hz); telemetry JSON is decimated to ~TELEMETRY_EXPORT_MAX_HZ for size.
+    proc_telemetry = decimate_dataframe_for_export(proc, TELEMETRY_API_JSON_MAX_HZ)
+    alt_col = "altitude_smooth_m" if "altitude_smooth_m" in proc_telemetry.columns else "altitude_m"
+    s_api = proc_telemetry["distance_m"].to_numpy(dtype=np.float64)
+    h_api = proc_telemetry[alt_col].to_numpy(dtype=np.float64)
     sample_rate_hz = float(estimate_sample_rate_hz(proc["unix_ns"].to_numpy()))
     return {
         "telemetry": dataframe_to_telemetry_columns(proc_telemetry),
         "altitude_vs_distance": {
-            "distance_m": s.tolist(),
-            "altitude_m": np.asarray(h, dtype=np.float64).tolist(),
+            "distance_m": s_api.tolist(),
+            "altitude_m": np.asarray(h_api, dtype=np.float64).tolist(),
         },
         "sample_rate_hz": sample_rate_hz,
         "smoothness_score": smoothness,

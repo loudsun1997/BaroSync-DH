@@ -1,5 +1,6 @@
-import { useCallback, useEffect, useMemo, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { ChartPercentileControls } from './ChartPercentileControls'
+import { VerticalSpeedCompareSummary } from './VerticalSpeedCompareSummary'
 import { GpsTrailPlot } from './GpsTrailPlot'
 import { TelemetryCharts } from './TelemetryCharts'
 import { CHART_PERCENTILE_DEFAULTS } from './chartScales'
@@ -68,11 +69,44 @@ export default function App() {
     low: CHART_PERCENTILE_DEFAULTS.low,
     high: CHART_PERCENTILE_DEFAULTS.high,
   })
+  const [alignFlash, setAlignFlash] = useState(false)
+  const hadAlignmentRef = useRef(false)
 
   const runs = data?.runs ?? []
 
   useEffect(() => {
-    if (!data?.comparison && colorMetric === 'delta_t') {
+    if (data?.alignment && !hadAlignmentRef.current) {
+      hadAlignmentRef.current = true
+      setAlignFlash(true)
+      const t = window.setTimeout(() => setAlignFlash(false), 1200)
+      return () => window.clearTimeout(t)
+    }
+    if (!data?.alignment) hadAlignmentRef.current = false
+  }, [data?.alignment])
+
+  const trailRunCountPrev = useRef<number>(-1)
+  useEffect(() => {
+    const n = runs.length
+    const prev = trailRunCountPrev.current
+    trailRunCountPrev.current = n
+
+    if (n < 2 && (colorMetric === 'vz_lap_compare' || colorMetric === 'delta_t_pace')) {
+      setColorMetric('vz')
+      return
+    }
+    if (prev < 2 && n >= 2 && colorMetric === 'vz') {
+      setColorMetric(data?.comparison != null ? 'delta_t_pace' : 'vz_lap_compare')
+    }
+  }, [runs.length, colorMetric, data?.comparison])
+
+  useEffect(() => {
+    if (data?.comparison && runs.length >= 2) {
+      setColorMetric((m) => (m === 'vz' || m === 'vz_lap_compare' ? 'delta_t_pace' : m))
+    }
+  }, [data?.comparison, runs.length])
+
+  useEffect(() => {
+    if (!data?.comparison && (colorMetric === 'delta_t' || colorMetric === 'delta_t_pace')) {
       setColorMetric('vz')
     }
   }, [data?.comparison, colorMetric])
@@ -436,12 +470,18 @@ export default function App() {
           <label style={{ marginLeft: 8 }}>
             Trail color{' '}
             <select value={colorMetric} onChange={(e) => setColorMetric(e.target.value as TrailColorMetric)}>
-              <option value="vz">Vertical velocity</option>
+              <option value="vz">Vertical velocity (each lap by its own Vz)</option>
+              <option value="vz_lap_compare" disabled={runs.length < 2}>
+                Lap compare — run 1 solid line, run 2 heat vs baseline
+              </option>
               <option value="g">G-force</option>
               <option value="variance">Vz variance (smoothness)</option>
               <option value="jerk">Jerk magnitude</option>
               <option value="delta_t" disabled={!data?.comparison}>
                 Time delta (B−A)
+              </option>
+              <option value="delta_t_pace" disabled={!data?.comparison || runs.length < 2}>
+                d(Δt)/ds on map (after baro — gain/lose heat)
               </option>
               <option value="braking" disabled={!hasMtbBraking}>
                 Braking intensity (MTB)
@@ -547,8 +587,16 @@ export default function App() {
       )}
 
       {runs.length > 0 && primaryTelemetryLen > 0 && (
-        <div className="main-grid">
-          <div className="trail-panel">
+        <div
+          className={alignFlash ? 'main-grid main-grid--align-snap' : 'main-grid'}
+        >
+          <div
+            className={
+              runs.length >= 2 && !data?.alignment
+                ? 'trail-panel trail-panel--pre-align'
+                : 'trail-panel'
+            }
+          >
             <GpsTrailPlot
               runs={runs}
               activeDisplayM={activeDisplayM}
@@ -573,6 +621,7 @@ export default function App() {
               high={chartYPercentiles.high}
               onChange={setChartYPercentiles}
             />
+            <VerticalSpeedCompareSummary runs={runs} />
             <TelemetryCharts
               runs={runs}
               activeDisplayM={activeDisplayM}
