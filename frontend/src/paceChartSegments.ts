@@ -133,21 +133,32 @@ function vzFlavorRgb(
   if (refVz == null || runVz == null || !Number.isFinite(refVz) || !Number.isFinite(runVz)) {
     return null
   }
-  if (Math.abs(refVz) < 0.12) {
-    return { r: 110, g: 110, b: 120 }
+  
+  // Calculate Delta Vz (positive = descending faster)
+  const deltaVz = refVz - runVz
+  
+  // Normalize between -1 and 1
+  const u = Math.tanh(deltaVz * 0.4)
+  
+  const w = { r: 230, g: 230, b: 230 } // Neutral grey/white
+  
+  if (u > 0) {
+    // Deep Blue for descending faster
+    const deepB = { r: 30, g: 58, b: 138 } // Tailwind blue-900
+    return { 
+      r: lerp(w.r, u, deepB.r), 
+      g: lerp(w.g, u, deepB.g), 
+      b: lerp(w.b, u, deepB.b) 
+    }
+  } else {
+    // Bright Red for descending slower
+    const brightR = { r: 220, g: 38, b: 38 } // Tailwind red-600
+    return { 
+      r: lerp(w.r, Math.abs(u), brightR.r), 
+      g: lerp(w.g, Math.abs(u), brightR.g), 
+      b: lerp(w.b, Math.abs(u), brightR.b) 
+    }
   }
-  if (refVz < 0) {
-    const adv = refVz - runVz
-    const u = Math.max(0, Math.min(1, 0.5 + 0.5 * Math.tanh(adv * 0.35)))
-    const deepB = { r: 20, g: 45, b: 150 }
-    const w = { r: 200, g: 210, b: 240 }
-    return { r: lerp(w.r, u, deepB.r), g: lerp(w.g, u, deepB.g), b: lerp(w.b, u, deepB.b) }
-  }
-  const adv = runVz - refVz
-  const u = Math.max(0, Math.min(1, 0.5 + 0.5 * Math.tanh(adv * 0.35)))
-  const deepR = { r: 180, g: 25, b: 45 }
-  const w = { r: 255, g: 220, b: 220 }
-  return { r: lerp(w.r, u, deepR.r), g: lerp(w.g, u, deepR.g), b: lerp(w.b, u, deepR.b) }
 }
 
 /**
@@ -207,12 +218,12 @@ export function buildVzTonedAltitudeTraces(
         y: ys,
         type: 'scatter' as const,
         mode: 'lines' as const,
-        name: traces.length === 0 ? `${runLabel} · Vz vs ref` : ' ',
-        showlegend: traces.length === 0,
-        legendgroup: 'alt-vz',
+        name: ' ',
+        showlegend: false,
+        legendgroup: runLabel,
         line: { color: runColor, width: 1.8 },
         opacity: 0.95,
-        hovertemplate: `<b>${runLabel}</b><br>dist %{x:.2f} m<br>alt %{y:.2f} m<extra></extra>`,
+        hoverinfo: 'skip' as const,
       })
     } else {
       const r = Math.round(rSum / acc)
@@ -223,27 +234,55 @@ export function buildVzTonedAltitudeTraces(
         y: ys,
         type: 'scatter' as const,
         mode: 'lines' as const,
-        name: traces.length === 0 ? `${runLabel} · Vz vs ref` : ' ',
-        showlegend: traces.length === 0,
-        legendgroup: 'alt-vz',
+        name: ' ',
+        showlegend: false,
+        legendgroup: runLabel,
         line: { color: `rgb(${r},${g},${bcol})`, width: 2.2 },
         opacity: 0.95,
-        hovertemplate: `<b>${runLabel}</b> (Vz vs ref)<br>dist %{x:.2f} m<br>alt %{y:.2f} m<extra></extra>`,
+        hoverinfo: 'skip' as const,
       })
     }
   }
-  return traces.length > 0
-    ? traces
-    : [
-        {
-          x,
-          y,
-          type: 'scatter' as const,
-          mode: 'lines' as const,
-          name: runLabel,
-          line: { color: runColor, width: 1.5 },
-          opacity: 0.95,
-          hovertemplate: `<b>${runLabel}</b><br>dist %{x:.2f} m<br>alt %{y:.2f} m<extra></extra>`,
-        },
-      ]
+  
+  if (traces.length > 0) {
+    // Add one invisible unified trace for hover to avoid multi-segment hover spam
+    traces.push({
+      x,
+      y,
+      type: 'scatter' as const,
+      mode: 'lines' as const,
+      name: ' ',
+      showlegend: false,
+      line: { color: 'transparent', width: 0 },
+      hovertemplate: `<b>${runLabel}</b> (Vz vs ref)<br>dist %{x:.2f} m<br>alt %{y:.2f} m<extra></extra>`,
+    })
+    
+    // Add a dummy trace just for the legend so the user sees Blue/Orange
+    traces.push({
+      x: [null],
+      y: [null],
+      type: 'scatter' as const,
+      mode: 'lines' as const,
+      name: runLabel,
+      legendgroup: runLabel,
+      showlegend: true,
+      line: { color: runColor, width: 2 },
+      hoverinfo: 'skip' as const,
+    })
+
+    return traces
+  }
+  
+  return [
+    {
+      x,
+      y,
+      type: 'scatter' as const,
+      mode: 'lines' as const,
+      name: runLabel,
+      line: { color: runColor, width: 1.5 },
+      opacity: 0.95,
+      hovertemplate: `<b>${runLabel}</b><br>dist %{x:.2f} m<br>alt %{y:.2f} m<extra></extra>`,
+    },
+  ]
 }
