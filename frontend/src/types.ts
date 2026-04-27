@@ -102,6 +102,7 @@ export type DeltaTAlongPath = {
 
 export type ComparisonPayload = {
   delta_t: DeltaTAlongPath
+  runs_delta_t?: DeltaTAlongPath[]
   high_delta_distance_m: number[]
   /** vs canonical: largest time-loss samples for map pins. */
   pace_loss_distance_m?: number[]

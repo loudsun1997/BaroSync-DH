@@ -3,7 +3,7 @@ import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } fr
 import { robustColorScaleRange } from './chartScales'
 import { plotlyInteractionConfig } from './plotlyConfig'
 import { Plot } from './plotlyFactory'
-import { distanceSeries, interpAlongDistance, nearestIndexForDistanceM } from './distanceUtils'
+import { distanceSeries, interpAlongDistance, nearestIndexForDistanceM, interpXYAlongDistance } from './distanceUtils'
 import { gateLineFromMeta, gateLineFromPreview, nearestIndexOnTrail, perpendicularGateLonLat } from './gateGeometry'
 import { latAt, lonAt, numAt, telemetryLen, telemetryLonLatArrays } from './telemetryAccess'
 import type { AlignmentMeta, ComparisonPayload, GatePreview, RunResult } from './types'
@@ -59,14 +59,36 @@ type Props = {
   onGateLocation: (lat: number, lon: number) => void
   /** Map pin: zoom charts + this callback (~±5 m) */
   onPaceLossPinClick?: (distanceM: number) => void
+  heatmapMetric?: 'delta_t' | 'delta_vz'
+  canonicalRef?: CanonicalReference | null
 }
 
-function metricZ(run: RunResult, comparison: ComparisonPayload | null): number[] {
+function metricZ(run: RunResult, comparison: ComparisonPayload | null, heatmapMetric?: 'delta_t' | 'delta_vz', canonicalRef?: CanonicalReference | null): number[] {
   const tel = run.telemetry
   const n = telemetryLen(tel)
   const z = new Array<number>(n)
-  for (let i = 0; i < n; i++) {
-    z[i] = interpAlongDistance(comparison, numAt(tel, 'distance_m', i)) ?? 0
+  
+  if (heatmapMetric === 'delta_vz' && canonicalRef?.distance_m && canonicalRef?.vz_m_s) {
+    const xd_ref = canonicalRef.distance_m as number[]
+    const vd_ref = canonicalRef.vz_m_s as number[]
+    for (let i = 0; i < n; i++) {
+      const d = numAt(tel, 'distance_m', i)
+      let rvz = numAt(tel, 'vz_smooth_m_s', i)
+      if (rvz == null || Math.abs(rvz) < 1e-5) rvz = numAt(tel, 'vz_m_s', i)
+      
+      let bv = 0
+      if (d != null && rvz != null) {
+        const interpBv = interpXYAlongDistance(xd_ref, vd_ref, d)
+        if (interpBv != null) {
+           bv = interpBv - rvz // positive = descending faster
+        }
+      }
+      z[i] = bv
+    }
+  } else {
+    for (let i = 0; i < n; i++) {
+      z[i] = interpAlongDistance(comparison, numAt(tel, 'distance_m', i)) ?? 0
+    }
   }
   return z
 }
@@ -205,7 +227,16 @@ function tightGpsView(
 }
 
 /** Robust Plotly cmin/cmax: pooled across all laps for consistent legend; outliers clip at ends. */
-function trailMapColorBoundsDeltaT(allZ: number[]): [number, number] | undefined {
+function trailMapColorBoundsDeltaT(allZ: number[], heatmapMetric: 'delta_t' | 'delta_vz'): [number, number] | undefined {
+  if (heatmapMetric === 'delta_vz') {
+     return robustColorScaleRange(allZ, {
+       symmetricAroundZero: true,
+       highPct: 95,
+       padFraction: 0,
+       minSpan: 1.0,
+       clampHigh: 10,
+     })
+  }
   return robustColorScaleRange(allZ, {
     symmetricAroundZero: true,
     highPct: 98,
@@ -228,6 +259,8 @@ export function GpsTrailPlot({
   gateLongitude,
   onGateLocation,
   onPaceLossPinClick,
+  heatmapMetric = 'delta_t',
+  canonicalRef,
 }: Props) {
   const trailBearingDeg =
     alignment?.trail_bearing_deg_clockwise_from_north_a ?? gatePreview?.trail_bearing_deg_clockwise_from_north_a
@@ -274,22 +307,22 @@ export function GpsTrailPlot({
   const mapColorBounds = useMemo(() => {
     const allZ: number[] = []
     if (comparison?.pace_vs_reference && runs[paceRunIndex]) {
-      allZ.push(...metricZ(runs[paceRunIndex]!, comparison))
+      allZ.push(...metricZ(runs[paceRunIndex]!, comparison, heatmapMetric, canonicalRef))
     } else {
       for (const run of runs) {
-        allZ.push(...metricZ(run, comparison))
+        allZ.push(...metricZ(run, comparison, heatmapMetric, canonicalRef))
       }
     }
-    return trailMapColorBoundsDeltaT(allZ)
-  }, [runs, comparison, paceRunIndex])
+    return trailMapColorBoundsDeltaT(allZ, heatmapMetric)
+  }, [runs, comparison, paceRunIndex, heatmapMetric, canonicalRef])
 
   // Bump only when map *data* changes — not on scrub (activeDisplayM), or Plotly resets zoom on every hover.
   const dataRevision = useMemo(
     () =>
       `${runs.length}-${gatePickMode}-${gateLatitude ?? 'n'}-${virtualGateLine ? 'g' : 'n'}-${snappedA ? 'a' : ''}${snappedB ? 'b' : ''}-cmp${
         comparison?.delta_t?.distance_m?.length ?? 0
-      }`,
-    [runs.length, gatePickMode, gateLatitude, virtualGateLine, snappedA, snappedB, comparison],
+      }-hm${heatmapMetric}`,
+    [runs.length, gatePickMode, gateLatitude, virtualGateLine, snappedA, snappedB, comparison, heatmapMetric],
   )
 
   const [mapViewBox, setMapViewBox] = useState<LonLatViewBox | null>(null)
@@ -374,7 +407,7 @@ export function GpsTrailPlot({
       const n = telemetryLen(tel)
       if (n === 0) return
       const { lon, lat } = telemetryLonLatArrays(tel)
-      const z = metricZ(run, comparison)
+      const z = metricZ(run, comparison, heatmapMetric, canonicalRef)
       const picked = pickLonLatTrace(lon, lat, mapPointBudget, filterBox)
       const pi = picked.idx
       const neutralPace = paceRef && ri !== pr
@@ -408,7 +441,7 @@ export function GpsTrailPlot({
               colorbar: showThisColorbar
                 ? {
                     title: {
-                      text: 'Δt vs ref (s)',
+                      text: heatmapMetric === 'delta_vz' ? 'ΔVz vs ref (m/s)' : 'Δt vs ref (s)',
                       font: { color: PLOT_TEXT, size: 11 },
                       side: 'right',
                     },
@@ -531,6 +564,8 @@ export function GpsTrailPlot({
     filterBox,
     mapPointBudget,
     paceRunIndex,
+    heatmapMetric,
+    canonicalRef,
   ])
 
   const scrubTraces = useMemo(() => {

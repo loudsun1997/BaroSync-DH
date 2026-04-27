@@ -313,9 +313,7 @@ def process_highfreq_frame(
 def _telemetry_export_column_names(df: pd.DataFrame) -> list[str]:
     """
     Per-sample API for the SPA: trail + baro altitude + time/distance + braking flags.
-    Vz is omitted from JSON; /align-baro re-derives ``vz_m_s`` from ``altitude_*`` in ``baro_align``.
-
-    Full ``proc`` still computes Vz/IMU in-process for ``apply_mtb_features``; IMU is not sent to the client.
+    Vz is now included for frontend comparison charts.
     """
     ordered = [
         "unix_ns",
@@ -323,6 +321,8 @@ def _telemetry_export_column_names(df: pd.DataFrame) -> list[str]:
         "longitude",
         "altitude_m",
         "altitude_smooth_m",
+        "vz_m_s",
+        "vz_smooth_m_s",
         "speed_m_s",
         "distance_m",
         "time_s",

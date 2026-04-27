@@ -167,16 +167,14 @@ def _pace_loss_pin_distances(
 
 
 def build_pace_vs_reference_payload(
-    run_b: pd.DataFrame,
+    runs: list[pd.DataFrame],
     distance_m: np.ndarray,
     t_reference_s: np.ndarray,
     ref_elevation_m: np.ndarray,
     t_reference_sigma_s: np.ndarray | None = None,
 ) -> dict[str, Any]:
     """
-    Full comparison object with delta_t = t_run - t_reference, lap profiles on the shared distance grid.
-    `t_a_s` in delta_t is reference time; `t_b_s` is the run's time; sigma (optional) is time spread across runs
-    that built the reference (per-meter), for UI bands.
+    Full comparison object with delta_t = t_run - t_reference for all runs.
     """
     g = np.asarray(distance_m, dtype=np.float64).ravel()
     h_ref = np.asarray(ref_elevation_m, dtype=np.float64).ravel()
@@ -184,11 +182,28 @@ def build_pace_vs_reference_payload(
     if len(h_ref) != len(g) or (t_sig is not None and len(t_sig) != len(g)):
         raise ValueError("ref_elevation_m and t_reference_sigma_s must match distance_m length")
 
-    dt = delta_t_against_reference(g, t_reference_s, run_b, use_time_s_column=True)
-    dlist = np.asarray(dt["distance_m"], dtype=np.float64)
-    if dlist.size < 2:
+    runs_delta_t = []
+    
+    # Process each run
+    for run in runs:
+        dt = delta_t_against_reference(g, t_reference_s, run, use_time_s_column=True)
+        # Resample run's altitude to distance grid
+        s_run, h_run = altitude_vs_distance(run, "altitude_smooth_m")
+        if dt["distance_m"]:
+            h_g = resample_time_on_distance_grid(s_run, h_run, np.asarray(dt["distance_m"], dtype=np.float64))
+            dt["altitude_m"] = h_g.tolist()
+        else:
+            dt["altitude_m"] = []
+        runs_delta_t.append(dt)
+
+    # Use the first run (if valid) or second run for legacy fields
+    # Actually, we'll return the first run that has valid delta_t as the primary for map pins, etc.
+    primary_dt = runs_delta_t[1] if len(runs_delta_t) > 1 else runs_delta_t[0] if runs_delta_t else None
+    
+    if not primary_dt or len(primary_dt["distance_m"]) < 2:
         return {
-            "delta_t": {**dt, "t_reference_sigma_s": None},
+            "delta_t": {"distance_m": [], "delta_t_s": [], "t_a_s": [], "t_b_s": [], "t_reference_sigma_s": None},
+            "runs_delta_t": runs_delta_t,
             "pace_vs_reference": True,
             "high_delta_distance_m": [],
             "pace_loss_distance_m": [],
@@ -196,9 +211,8 @@ def build_pace_vs_reference_payload(
             "lap_b": {"distance_m": [], "altitude_m": []},
         }
 
-    s_b, h_b = altitude_vs_distance(run_b, "altitude_smooth_m")
-    h_b_g = resample_time_on_distance_grid(s_b, h_b, dlist)
-    d_arr = np.asarray(dt["delta_t_s"], dtype=np.float64)
+    dlist = np.asarray(primary_dt["distance_m"], dtype=np.float64)
+    d_arr = np.asarray(primary_dt["delta_t_s"], dtype=np.float64)
     pin_d = _pace_loss_pin_distances(dlist, d_arr, max_pins=8)
     mask = high_delta_mask(d_arr, window=21, k=2.0)
 
@@ -211,12 +225,13 @@ def build_pace_vs_reference_payload(
         j = int((np.abs(g - float(d))).argmin())
         h_a_g.append(float(h_ref[j]) if j < h_ref.size else float("nan"))
 
-    out_dt: dict[str, Any] = {**dt, "t_reference_sigma_s": sig_resampled}
+    out_dt: dict[str, Any] = {**primary_dt, "t_reference_sigma_s": sig_resampled}
     return {
         "delta_t": out_dt,
+        "runs_delta_t": runs_delta_t,
         "pace_vs_reference": True,
         "high_delta_distance_m": dlist[mask].tolist() if dlist.size else [],
         "pace_loss_distance_m": pin_d,
         "lap_a": {"distance_m": dlist.tolist(), "altitude_m": h_a_g},
-        "lap_b": {"distance_m": dlist.tolist(), "altitude_m": h_b_g.tolist()},
+        "lap_b": {"distance_m": dlist.tolist(), "altitude_m": primary_dt["altitude_m"]},
     }

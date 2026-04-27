@@ -69,6 +69,8 @@ export default function App() {
   const [paceComparison, setPaceComparison] = useState<ComparisonPayload | null>(null)
   const [paceErr, setPaceErr] = useState<string | null>(null)
   const [paceBusy, setPaceBusy] = useState(false)
+  const [baselineRunIndex, setBaselineRunIndex] = useState<number | null>(null) // null = Master Trail Signature
+  const [heatmapMetric, setHeatmapMetric] = useState<'delta_t' | 'delta_vz'>('delta_t')
   /** When set, distance charts x-axis = ~10m window (from map “pace loss” pin). */
   const [distanceFocusRange, setDistanceFocusRange] = useState<[number, number] | null>(null)
 
@@ -153,22 +155,59 @@ export default function App() {
   }, [synthesisKey])
 
   const paceFetchKey = useMemo(() => {
-    if (!data?.alignment || !data.runs[1] || !canonicalRef?.t_reference_s?.length) return null
-    const c = compactCanonicalForPace(canonicalRef)
-    if (!c) return null
-    return `${c.distance_m.length}-${telemetryLen(data.runs[1].telemetry)}-${data.alignment.lag_applied_to_run_b_s ?? 0}`
-  }, [data?.alignment, data?.runs, canonicalRef])
+    if (!data?.alignment || data.runs.length === 0) return null
+    if (baselineRunIndex === null) {
+      if (!canonicalRef?.t_reference_s?.length) return null
+      const c = compactCanonicalForPace(canonicalRef)
+      if (!c) return null
+      return `ref-${c.distance_m.length}-${data.runs.length}-${data.alignment.lag_applied_to_run_b_s ?? 0}`
+    } else {
+      const run = data.runs[baselineRunIndex]
+      if (!run) return null
+      return `run-${baselineRunIndex}-${data.runs.length}-${telemetryLen(run.telemetry)}`
+    }
+  }, [data?.alignment, data?.runs, canonicalRef, baselineRunIndex])
 
   useEffect(() => {
-    if (!paceFetchKey || !data?.runs[1]) {
+    if (!paceFetchKey || data?.runs.length === 0) {
       setPaceComparison(null)
       return
     }
-    const c = compactCanonicalForPace(canonicalRef)
-    if (!c) {
-      setPaceComparison(null)
-      return
+
+    let dist: number[] = []
+    let t_ref: number[] = []
+    let ref_ele: number[] = []
+    let t_sig: number[] | undefined = undefined
+
+    if (baselineRunIndex === null) {
+      const c = compactCanonicalForPace(canonicalRef)
+      if (!c) {
+        setPaceComparison(null)
+        return
+      }
+      dist = c.distance_m
+      t_ref = c.t_reference_s
+      ref_ele = c.ref_elevation_m
+      t_sig = c.t_reference_sigma_s ?? undefined
+    } else {
+      const run = data!.runs[baselineRunIndex]!
+      const tel = run.telemetry
+      const len = telemetryLen(tel)
+      dist = distanceSeries(tel)
+      const ns = isTelemetryRecords(tel) ? tel.map(t => t.unix_ns) : tel.unix_ns
+      const t0 = (ns[0] ?? 0) * 1e-9
+      t_ref = new Array(len)
+      for (let i=0; i<len; i++) {
+        const time_s = isTelemetryRecords(tel) ? tel[i].time_s : tel.time_s?.[i]
+        if (typeof time_s === 'number') {
+           t_ref[i] = time_s
+        } else {
+           t_ref[i] = (ns[i] ?? 0) * 1e-9 - t0
+        }
+      }
+      ref_ele = isTelemetryRecords(tel) ? tel.map(t => t.altitude_smooth_m ?? t.altitude_m ?? 0) : ((tel.altitude_smooth_m ?? tel.altitude_m) as number[]) ?? new Array(len).fill(0)
     }
+
     const ac = new AbortController()
     setPaceErr(null)
     setPaceBusy(true)
@@ -179,11 +218,11 @@ export default function App() {
           headers: { 'Content-Type': 'application/json' },
           signal: ac.signal,
           body: JSON.stringify({
-            run_b_telemetry: data.runs[1].telemetry,
-            distance_m: c.distance_m,
-            t_reference_s: c.t_reference_s,
-            t_reference_sigma_s: c.t_reference_sigma_s,
-            ref_elevation_m: c.ref_elevation_m,
+            runs_telemetry: data!.runs.map((r) => r.telemetry),
+            distance_m: dist,
+            t_reference_s: t_ref,
+            t_reference_sigma_s: t_sig,
+            ref_elevation_m: ref_ele,
           }),
         })
         if (ac.signal.aborted) return
@@ -208,7 +247,7 @@ export default function App() {
       ac.abort()
       setPaceBusy(false)
     }
-  }, [paceFetchKey, data?.runs, canonicalRef])
+  }, [paceFetchKey, data?.runs, canonicalRef, baselineRunIndex])
 
   useEffect(() => {
     if (data?.alignment && !hadAlignmentRef.current) {
@@ -410,9 +449,17 @@ export default function App() {
               </button>
             </>
           )}
-          <span className="toolbar-note" style={{ marginLeft: 8, fontSize: 12, color: '#475569' }} title="After baro align, the map colors the trail by lap time difference (B−A).">
-            Map: pace vs reference (Δt, green = up, red = down)
-          </span>
+          <div style={{ marginLeft: 8, display: 'inline-flex', alignItems: 'center', gap: 6, fontSize: 13 }}>
+            Map heat:
+            <select
+              value={heatmapMetric}
+              onChange={(e) => setHeatmapMetric(e.target.value as 'delta_t' | 'delta_vz')}
+              className="chart-percentile-input"
+            >
+              <option value="delta_t">Outcome: Δt vs ref</option>
+              <option value="delta_vz">Action: ΔVz vs ref</option>
+            </select>
+          </div>
           <label style={{ marginLeft: 12, display: 'inline-flex', alignItems: 'center', gap: 6, cursor: 'pointer' }}>
             <input
               type="checkbox"
@@ -462,9 +509,11 @@ export default function App() {
               activeDisplayM={activeDisplayM}
               onActiveDisplayM={setActiveDisplayM}
               comparison={displayComparison}
-              paceRunIndex={1}
+              heatmapMetric={heatmapMetric}
+              canonicalRef={canonicalRef}
+              paceRunIndex={Math.max(1, baselineRunIndex === null ? 0 : baselineRunIndex)}
               alignment={data?.alignment}
-              gatePreview={null}
+              gatePreview={data?.runs[0]?.gate_preview}
               gatePickMode={gatePickMode}
               gateLatitude={gateLat}
               gateLongitude={gateLon}
@@ -476,13 +525,26 @@ export default function App() {
               onPaceLossPinClick={onPaceLossPin}
             />
           </div>
-          <div className="chart-panel">
+            <div className="chart-panel">
+              <div className="baseline-selector" style={{ marginBottom: '8px', padding: '8px', background: '#f8fafc', border: '1px solid #e2e8f0', borderRadius: '4px', display: 'flex', alignItems: 'center', gap: '8px' }}>
+                <strong style={{ fontSize: '13px', color: '#334155' }}>Comparison Baseline:</strong>
+                <select 
+                  style={{ padding: '4px 8px', fontSize: '13px', borderRadius: '4px', border: '1px solid #cbd5e1' }}
+                  value={baselineRunIndex === null ? 'ref' : baselineRunIndex}
+                  onChange={(e) => setBaselineRunIndex(e.target.value === 'ref' ? null : parseInt(e.target.value, 10))}
+                >
+                  <option value="ref">Master Trail Signature</option>
+                  {runs.map((r, i) => (
+                    <option key={i} value={i}>{r.label ?? `Run ${i + 1}`}</option>
+                  ))}
+                </select>
+              </div>
             <ChartPercentileControls
               low={chartYPercentiles.low}
               high={chartYPercentiles.high}
               onChange={setChartYPercentiles}
             />
-            <TelemetryCharts
+          <TelemetryCharts
               runs={runs}
               activeDisplayM={activeDisplayM}
               onActiveDisplayM={setActiveDisplayM}

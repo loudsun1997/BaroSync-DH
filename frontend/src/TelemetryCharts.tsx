@@ -245,6 +245,31 @@ type Props = {
   normalizeElevation: boolean
   yPercentileLow: number
   yPercentileHigh: number
+  baselineRunIndex?: number | null
+}
+
+function interpXYAlongDistance(xd: number[], yd: number[], distM: number): number | null {
+  if (xd.length < 2 || yd.length !== xd.length) return null
+  if (distM <= xd[0]!) return Number.isFinite(yd[0]!) ? yd[0]! : null
+  const lastX = xd[xd.length - 1]!
+  if (distM >= lastX) {
+    const v = yd[yd.length - 1]!
+    return Number.isFinite(v) ? v : null
+  }
+  let lo = 0
+  let hi = xd.length - 1
+  while (hi - lo > 1) {
+    const mid = (lo + hi) >> 1
+    if (xd[mid]! <= distM) lo = mid
+    else hi = mid
+  }
+  const x0 = xd[lo]!
+  const x1 = xd[hi]!
+  const t = x1 > x0 ? (distM - x0) / (x1 - x0) : 0
+  const y0 = yd[lo] ?? 0
+  const y1 = yd[hi] ?? 0
+  if (!Number.isFinite(y0) || !Number.isFinite(y1)) return null
+  return y0 + t * (y1 - y0)
 }
 
 export function TelemetryCharts({
@@ -260,8 +285,8 @@ export function TelemetryCharts({
   normalizeElevation,
   yPercentileLow,
   yPercentileHigh,
+  baselineRunIndex = null,
 }: Props) {
-  const [paceCaption, setPaceCaption] = useState<string | null>(null)
   const lastSyncedDisplayMRef = useRef<number | null>(null)
   useEffect(() => {
     if (activeDisplayM != null && Number.isFinite(activeDisplayM)) {
@@ -346,11 +371,40 @@ export function TelemetryCharts({
   const chartFigures = useMemo(() => {
     const n = runs.length
     const paceRef = Boolean(comparison?.pace_vs_reference)
-    const pr = Math.min(Math.max(0, paceRunIndex), Math.max(0, n - 1))
-    const canVz = canonicalRef?.vz_m_s?.length && canonicalRef?.distance_m?.length
-    const doVz = paceRef && canVz
+    const doVz = paceRef
+
+    let baselineGrid: { distance_m: (number | null)[]; vz_m_s: (number | null)[]; elevation_m?: (number | null)[] } | null = null
+    if (doVz) {
+      if (baselineRunIndex === null && canonicalRef?.distance_m?.length && canonicalRef?.vz_m_s?.length) {
+        baselineGrid = { distance_m: canonicalRef.distance_m, vz_m_s: canonicalRef.vz_m_s, elevation_m: canonicalRef.elevation_m }
+      } else if (baselineRunIndex !== null && runs[baselineRunIndex]) {
+        const brun = runs[baselineRunIndex].telemetry
+        const d = distanceSeries(brun)
+        const vz = (brun as any).vz_smooth_m_s || (brun as any).vz_m_s
+        let vza: number[] = []
+        if (Array.isArray(vz)) {
+           vza = vz
+        } else if (Array.isArray((brun as any)[0]?.vz_m_s)) {
+           vza = (brun as any).map((t: any) => t.vz_smooth_m_s ?? t.vz_m_s ?? 0)
+        }
+        baselineGrid = { distance_m: d, vz_m_s: vza, elevation_m: altitudeChartSeries(brun) }
+      }
+    }
 
     const altData: object[] = []
+    
+    if (baselineGrid && baselineGrid.elevation_m && baselineGrid.distance_m && baselineGrid.distance_m.length) {
+      const b_y = normalizeElevation && baselineGrid.elevation_m.length ? baselineGrid.elevation_m.map((h) => typeof h === 'number' && typeof baselineGrid!.elevation_m![0] === 'number' ? h - baselineGrid!.elevation_m![0] : h) : baselineGrid.elevation_m;
+      altData.push({
+        x: baselineGrid.distance_m,
+        y: b_y,
+        type: 'scatter' as const,
+        mode: 'lines' as const,
+        name: 'Master Reference',
+        line: { color: 'rgba(156, 163, 175, 0.4)', width: 8 },
+        hoverinfo: 'skip' as const,
+      })
+    }
     for (let ri = 0; ri < n; ri++) {
       const run = runs[ri]!
       const tel = run.telemetry
@@ -361,8 +415,7 @@ export function TelemetryCharts({
       const lineColor = run.color ?? AXIS_LINE_COLORS[ri % AXIS_LINE_COLORS.length]
       const runName = run.label ?? `Run ${ri + 1}`
 
-      if (doVz && ri === pr) {
-        const can = canonicalRef as CanonicalReference
+      if (doVz && baselineGrid && baselineGrid.distance_m.length) {
         const getRunVz = (d: number) => {
           const a = interpTelemetryScalarAlongDistance(tel, 'vz_smooth_m_s', d)
           if (a != null && Math.abs(a) > 1e-5) return a
@@ -372,7 +425,7 @@ export function TelemetryCharts({
           ...buildVzTonedAltitudeTraces(
             x,
             y,
-            { distance_m: can.distance_m, vz_m_s: can.vz_m_s },
+            baselineGrid,
             getRunVz,
             runName,
             lineColor,
@@ -395,7 +448,7 @@ export function TelemetryCharts({
 
     const tlen = runs.reduce((s, r) => s + telemetryLen(r.telemetry), 0)
     const brakeSig = runs.map((r) => (r.braking_intervals_m ?? []).length).join(',')
-    const chartDataRevision = `${n}-${tlen}-${normalizeElevation ? 'rel' : 'abs'}-${brakeSig}-yp${yPercentileLow}-${yPercentileHigh}-vzt${doVz ? 1 : 0}-alt1`
+    const chartDataRevision = `${n}-${tlen}-${normalizeElevation ? 'rel' : 'abs'}-${brakeSig}-yp${yPercentileLow}-${yPercentileHigh}-vzt${doVz ? 1 : 0}-alt1-${baselineRunIndex}`
     const altYRange = robustYAxisRange(collectFiniteYFromTraces(altData as { y?: unknown }[]), {
       lowPct: yPercentileLow,
       highPct: yPercentileHigh,
@@ -547,13 +600,48 @@ export function TelemetryCharts({
 
   const paceRef = Boolean(comparison?.pace_vs_reference)
 
+  const hoverCaption = useMemo(() => {
+    if (activeDisplayM == null) return null;
+
+    const getVz = (run: RunResult) => {
+      const a = interpTelemetryScalarAlongDistance(run.telemetry, 'vz_smooth_m_s', activeDisplayM)
+      if (a != null && Math.abs(a) > 1e-5) return a
+      return interpTelemetryScalarAlongDistance(run.telemetry, 'vz_m_s', activeDisplayM)
+    }
+
+    let gradeStr = '';
+    let baselineSpeedStr = '';
+    
+    if (canonicalRef?.distance_m && canonicalRef?.grade_m_per_m) {
+        const grade = interpXYAlongDistance(canonicalRef.distance_m as number[], canonicalRef.grade_m_per_m as number[], activeDisplayM);
+        if (grade != null) gradeStr = `Trail Grade: ${(grade * 100).toFixed(1)}%. `;
+    }
+
+    let b_vz: number | null = null;
+    if (baselineRunIndex === null && canonicalRef?.distance_m && canonicalRef?.vz_m_s) {
+        b_vz = interpXYAlongDistance(canonicalRef.distance_m as number[], canonicalRef.vz_m_s as number[], activeDisplayM);
+    } else if (baselineRunIndex !== null && runs[baselineRunIndex]) {
+        b_vz = getVz(runs[baselineRunIndex]);
+    }
+    if (b_vz != null) baselineSpeedStr = `Baseline Speed (Vz): ${b_vz.toFixed(2)} m/s.`;
+
+    let speeds = runs.map((r, i) => {
+        if (i === baselineRunIndex) return null;
+        const vz = getVz(r);
+        if (vz != null) {
+            return `${r.label ?? `Run ${i+1}`} Speed (Vz): ${vz.toFixed(2)} m/s`;
+        }
+        return null;
+    }).filter(Boolean).join(', ');
+    
+    return `At ${activeDisplayM.toFixed(0)} m: ${gradeStr}${speeds ? speeds + '. ' : ''}${baselineSpeedStr}`;
+  }, [activeDisplayM, canonicalRef, baselineRunIndex, runs]);
+
   return (
     <div>
-      {paceCaption && (
-        <p className="pace-ghost-caption" role="status" aria-live="polite">
-          {paceCaption}
-        </p>
-      )}
+      <p className="pace-ghost-caption" role="status" aria-live="polite" style={{ minHeight: '1.5rem', display: 'flex', alignItems: 'center' }}>
+        {hoverCaption || 'Hover over charts to inspect spatial grade and vertical velocity'}
+      </p>
       {distanceFocusRangeProp && (
         <p className="pace-pin-zoom-hint" role="status">
           X-axis: ~10 m around the map time-loss pin.
@@ -601,16 +689,16 @@ export function TelemetryCharts({
         {comparison && (
           <DistanceChartShell
             shellId="delta"
-            title={paceRef ? 'Pace Navigator (vs reference)' : 'Time delta (Δt) along distance'}
+            title={paceRef ? "Outcome: Cumulative time gain/loss (Δt)" : 'Time delta (Δt) along distance'}
             hint={distChartsHint}
             fullscreen={distanceChartFullscreen}
             setFullscreen={setDistanceChartFullscreen}
           >
             <DeltaTPlot
+              runs={runs}
               comparison={comparison}
               runLabelB={runLabelB}
               onActiveDisplayM={syncDisplayMFromHover}
-              onPaceCaption={setPaceCaption}
               yPercentileLow={yPercentileLow}
               yPercentileHigh={yPercentileHigh}
               plotDataRevision={chartDataRevision}
@@ -622,32 +710,57 @@ export function TelemetryCharts({
           </DistanceChartShell>
         )}
 
-        <DistanceChartShell
-          shellId="alt"
-          title="Altitude"
-          hint={distChartsHint}
-          fullscreen={distanceChartFullscreen}
-          setFullscreen={setDistanceChartFullscreen}
-        >
-          <Plot
-            data={altData}
-            layout={altLayout}
-            config={plotlyDistanceExplorerConfig}
-            style={{ width: '100%', height: altHeight }}
-            onInitialized={onAltitudePlotInitialized}
-            onHover={handleAltHover}
-          />
-        </DistanceChartShell>
+        {comparison && paceRef && chartFigures.baselineGrid && (
+          <DistanceChartShell
+            shellId="vertical"
+            title="Action: Vertical Performance (ΔVz)"
+            hint={distChartsHint}
+            fullscreen={distanceChartFullscreen}
+            setFullscreen={setDistanceChartFullscreen}
+          >
+            <VerticalDeltaPlot
+              runs={runs}
+              comparison={comparison}
+              baselineGrid={chartFigures.baselineGrid}
+              runLabelB={runLabelB}
+              onActiveDisplayM={syncDisplayMFromHover}
+              yPercentileLow={yPercentileLow}
+              yPercentileHigh={yPercentileHigh}
+              plotDataRevision={chartDataRevision}
+              plotHeight={deltaHeight}
+              xaxisRange={effectiveXRange}
+              showXRangeSlider={showXRangeSlider}
+              distShapes={distShapes}
+            />
+          </DistanceChartShell>
+        )}
+
+          <DistanceChartShell
+            shellId="alt"
+            title="Topographical Overlay (Altitude)"
+            hint={distChartsHint}
+            fullscreen={distanceChartFullscreen}
+            setFullscreen={setDistanceChartFullscreen}
+          >
+            <Plot
+              data={altData}
+              layout={altLayout}
+              config={plotlyDistanceExplorerConfig}
+              style={{ width: '100%', height: altHeight }}
+              onInitialized={onAltitudePlotInitialized}
+              onHover={handleAltHover}
+            />
+          </DistanceChartShell>
       </div>
     </div>
   )
 }
 
 function DeltaTPlot({
+  runs,
   comparison,
   runLabelB,
   onActiveDisplayM,
-  onPaceCaption,
   yPercentileLow,
   yPercentileHigh,
   plotDataRevision,
@@ -656,10 +769,10 @@ function DeltaTPlot({
   showXRangeSlider,
   distShapes,
 }: {
+  runs?: RunResult[]
   comparison: ComparisonPayload
   runLabelB?: string
   onActiveDisplayM: (m: number | null) => void
-  onPaceCaption?: (text: string | null) => void
   yPercentileLow: number
   yPercentileHigh: number
   plotDataRevision: string
@@ -669,34 +782,26 @@ function DeltaTPlot({
   distShapes: object[]
 }) {
   const paceRef = Boolean(comparison.pace_vs_reference)
-  const xd = comparison.delta_t.distance_m
-  const yd = comparison.delta_t.delta_t_s
-  const yPos = yd.map((v) => (Number.isFinite(v) && v > 0 ? v : 0))
-  const yNeg = yd.map((v) => (Number.isFinite(v) && v < 0 ? v : 0))
-  const hiX = comparison.high_delta_distance_m
+  const runsDeltaT = comparison.runs_delta_t ?? [comparison.delta_t]
+  
+  const dtTraces: object[] = []
+  const allY: number[] = []
+  
+  const xd_ref = comparison.delta_t.distance_m
   const sig = comparison.delta_t.t_reference_sigma_s
-  const hiY = hiX.map((d) => {
-    let j = 0
-    for (let i = 0; i < xd.length; i++) {
-      if (xd[i]! <= d) j = i
-    }
-    return yd[j] ?? 0
-  })
-  const dtDataRevision = `${plotDataRevision}-dt${xd.length}-${hiX.length}`
-
   const bandUp: number[] = []
   const bandDown: number[] = []
-  if (paceRef && sig && sig.length === xd.length) {
-    for (let i = 0; i < xd.length; i++) {
+  if (paceRef && sig && sig.length === xd_ref.length) {
+    for (let i = 0; i < xd_ref.length; i++) {
       const s = sig[i] != null && Number.isFinite(sig[i]!) ? Math.min(3, Math.max(0, Number(sig[i]))) : 0
       bandUp.push(s)
       bandDown.push(-s)
     }
   }
-  const dtTraces: object[] = []
-  if (paceRef && bandUp.length === xd.length) {
+
+  if (paceRef && bandUp.length === xd_ref.length) {
     dtTraces.push({
-      x: xd,
+      x: xd_ref,
       y: bandUp,
       type: 'scatter' as const,
       mode: 'lines' as const,
@@ -706,7 +811,7 @@ function DeltaTPlot({
       hoverinfo: 'skip' as const,
     })
     dtTraces.push({
-      x: xd,
+      x: xd_ref,
       y: bandDown,
       type: 'scatter' as const,
       mode: 'lines' as const,
@@ -717,48 +822,84 @@ function DeltaTPlot({
       fillcolor: 'rgba(100, 116, 139, 0.18)',
       hoverinfo: 'skip' as const,
     })
+    allY.push(...bandUp, ...bandDown)
   }
-  const labelB = runLabelB?.trim() || 'Run B'
-  dtTraces.push(
-    {
-      x: xd,
-      y: yPos,
-      type: 'scatter' as const,
-      mode: 'lines' as const,
-      name: ' ',
-      showlegend: false,
-      line: { width: 0 },
-      fill: 'tozeroy' as const,
-      fillcolor: 'rgba(220, 38, 38, 0.2)',
-      hoverinfo: 'skip' as const,
-    },
-    {
-      x: xd,
-      y: yNeg,
-      type: 'scatter' as const,
-      mode: 'lines' as const,
-      name: ' ',
-      showlegend: false,
-      line: { width: 0 },
-      fill: 'tozeroy' as const,
-      fillcolor: 'rgba(22, 163, 74, 0.2)',
-      hoverinfo: 'skip' as const,
-    },
-  )
-  if (paceRef) {
+
+  runsDeltaT.forEach((dt, i) => {
+    const xd = dt.distance_m
+    const yd = dt.delta_t_s
+    const yPos = yd.map((v) => (Number.isFinite(v) && v > 0 ? v : 0))
+    const yNeg = yd.map((v) => (Number.isFinite(v) && v < 0 ? v : 0))
+    allY.push(...yd.filter(Number.isFinite))
+
+    const lineColor = runs?.[i]?.color ?? '#9a3412'
+    const label = runs?.[i]?.label ?? (runsDeltaT.length > 1 ? `Run ${i + 1}` : (runLabelB?.trim() || 'Run B'))
+
     dtTraces.push(
-      ...buildDeltaTSlopeTraces(xd, yd, 2, 'Pace gap · slope=section intensity', 'pace-dt'),
+      {
+        x: xd,
+        y: yPos,
+        type: 'scatter' as const,
+        mode: 'lines' as const,
+        name: ' ',
+        showlegend: false,
+        line: { width: 0 },
+        fill: 'tozeroy' as const,
+        fillcolor: 'rgba(220, 38, 38, 0.1)',
+        hoverinfo: 'skip' as const,
+      },
+      {
+        x: xd,
+        y: yNeg,
+        type: 'scatter' as const,
+        mode: 'lines' as const,
+        name: ' ',
+        showlegend: false,
+        line: { width: 0 },
+        fill: 'tozeroy' as const,
+        fillcolor: 'rgba(22, 163, 74, 0.1)',
+        hoverinfo: 'skip' as const,
+      },
     )
-  } else {
+    if (paceRef) {
+      dtTraces.push(
+        ...buildDeltaTSlopeTraces(xd, yd, 2, `${label}`, `pace-dt-${i}`),
+      )
+    } else {
+      dtTraces.push({
+        x: xd,
+        y: yd,
+        type: 'scatter' as const,
+        mode: 'lines' as const,
+        name: `Δt (${label} − A)`,
+        line: { color: lineColor, width: 2 },
+      })
+    }
+  })
+
+  const hiX = comparison.high_delta_distance_m
+  const hiY = hiX.map((d) => {
+    const xd = comparison.delta_t.distance_m
+    const yd = comparison.delta_t.delta_t_s
+    let j = 0
+    for (let i = 0; i < xd.length; i++) {
+      if (xd[i]! <= d) j = i
+    }
+    return yd[j] ?? 0
+  })
+
+  if (!paceRef) {
     dtTraces.push({
-      x: xd,
-      y: yd,
+      x: hiX,
+      y: hiY,
       type: 'scatter' as const,
-      mode: 'lines' as const,
-      name: 'Δt (B−A)',
-      line: { color: '#9a3412', width: 2 },
+      mode: 'markers' as const,
+      name: 'High pace-change',
+      marker: { color: '#ca8a04', size: 8, line: { color: '#fff', width: 1 } },
     })
   }
+  
+  const dtDataRevision = `${plotDataRevision}-dt${runsDeltaT.length}-${hiX.length}`
   if (!paceRef) {
     dtTraces.push({
       x: hiX,
@@ -772,14 +913,7 @@ function DeltaTPlot({
   const dtYRange = paceRef
     ? robustYAxisRange(
         (() => {
-          const base = yd.filter((v) => Number.isFinite(v)) as number[]
-          for (const u of bandUp) {
-            if (Number.isFinite(u)) {
-              base.push(u)
-              base.push(-u)
-            }
-          }
-          return base
+          return allY
         })(),
         {
           symmetricAroundZero: true,
@@ -835,23 +969,7 @@ function DeltaTPlot({
         const p = ev.points?.[0]
         if (p && typeof p.x === 'number') {
           onActiveDisplayM(p.x)
-          const py = interpAlongDistance(comparison, p.x)
-          if (py == null || !Number.isFinite(py)) return
-          if (paceRef) {
-            onPaceCaption?.(
-              `At ${p.x.toFixed(0)} m: ${labelB} is ${py >= 0 ? '+' : ''}${py.toFixed(2)} s ${
-                py >= 0 ? 'slower' : 'faster'
-              } than the reference baseline (0 s).`,
-            )
-          } else {
-            onPaceCaption?.(
-              `At ${p.x.toFixed(0)} m: ${labelB} is ${py >= 0 ? '+' : ''}${py.toFixed(2)} s vs lap A.`,
-            )
-          }
         }
-      }}
-      onUnhover={() => {
-        onPaceCaption?.(null)
       }}
     />
   )

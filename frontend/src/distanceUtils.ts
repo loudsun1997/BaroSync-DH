@@ -69,7 +69,7 @@ export function interpTelemetryScalarAlongDistance(
   return interpXYAlongDistance(xd, yd, distM)
 }
 
-function interpXYAlongDistance(xd: number[], yd: number[], distM: number): number | null {
+export function interpXYAlongDistance(xd: number[], yd: number[], distM: number): number | null {
   if (xd.length < 2 || yd.length !== xd.length) return null
   if (distM <= xd[0]!) return Number.isFinite(yd[0]!) ? yd[0]! : null
   const lastX = xd[xd.length - 1]!
