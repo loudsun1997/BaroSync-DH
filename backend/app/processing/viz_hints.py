@@ -20,8 +20,6 @@ def compute_viz_hints(proc: pd.DataFrame) -> dict[str, Any]:
     """
     out: dict[str, Any] = {"map": {}, "charts": {}}
 
-    out["map"]["g"] = {"cmin": 0.5, "cmax": 4.0}
-
     if "vz_m_s" in proc.columns:
         # Map / heat profile: fixed asymmetric scale (fast descent vs slight climb); spikes clip.
         out["map"]["vz"] = {"cmin": -8.0, "cmax": 1.0}

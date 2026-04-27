@@ -31,9 +31,8 @@ function pooledMapColorBoundsFromServer(
   runs: RunResult[],
   metric: TrailColorMetric,
 ): [number, number] | undefined {
-  if (metric !== 'vz' && metric !== 'g') return undefined
-  const k = metric === 'vz' ? 'vz' : 'g'
-  const bounds = runs.map((r) => r.viz_hints?.map?.[k])
+  if (metric !== 'vz') return undefined
+  const bounds = runs.map((r) => r.viz_hints?.map?.vz)
   if (bounds.length !== runs.length || bounds.some((b) => b == null)) return undefined
   const list = bounds as { cmin: number; cmax: number }[]
   const cmin = Math.min(...list.map((b) => b.cmin))
@@ -139,31 +138,17 @@ function metricZ(
   const z = new Array<number>(n)
   for (let i = 0; i < n; i++) {
     switch (colorMetric) {
-      case 'g':
-        z[i] = numAt(tel, 'g_total', i)
-        break
-      case 'variance':
-        z[i] = numAt(tel, 'vz_rolling_std', i)
-        break
-      case 'jerk':
-        z[i] = numAt(tel, 'jerk_magnitude_ms3', i)
-        break
       case 'delta_t':
         z[i] = interpAlongDistance(comparison, numAt(tel, 'distance_m', i)) ?? 0
         break
       case 'vz_lap_compare':
         z[i] = vzDisplayValueAt(tel, i) ?? 0
         break
-      case 'braking':
-        z[i] = numAt(tel, 'mtb_braking_intensity', i)
-        break
-      case 'lean_mtb':
-        z[i] = numAt(tel, 'mtb_lean_deg', i)
-        break
       case 'vz':
-      default:
         z[i] = vzDisplayValueAt(tel, i) ?? 0
         break
+      default:
+        z[i] = vzDisplayValueAt(tel, i) ?? 0
     }
   }
   return z
@@ -171,48 +156,26 @@ function metricZ(
 
 function colorbarTitle(metric: TrailColorMetric): string {
   switch (metric) {
-    case 'g':
-      return 'g'
-    case 'variance':
-      return 'Vz σ (m/s)'
-    case 'jerk':
-      return '|Jerk| (m/s³)'
     case 'delta_t':
       return 'Δt (s)'
     case 'delta_t_pace':
       return "−d(Δt)/ds (s/m)<br><sub>green · gaining on A &nbsp;|&nbsp; red · losing</sub>"
     case 'vz_lap_compare':
       return 'Vz_base − Vz_compare (m/s)<br><sub>orange · compare faster down &nbsp;|&nbsp; blue · slower</sub>'
-    case 'braking':
-      return 'Braking intensity (m/s²)'
-    case 'lean_mtb':
-      return 'Lean (°)'
     case 'vz':
-    default:
       return 'Vz (m/s)'
   }
 }
 
 function mapHintForMetric(metric: TrailColorMetric): string {
   switch (metric) {
-    case 'g':
-      return 'Colors show total acceleration magnitude (g); scale is fixed ~0.5–4 g so vibration spikes clip at the top instead of flattening the lap.'
-    case 'variance':
-      return 'Colors show rolling std-dev of vertical velocity (rougher = higher).'
-    case 'jerk':
-      return 'Colors show jerk magnitude along the trail.'
     case 'delta_t':
       return 'Colors show time delta between laps (B−A) at each distance.'
     case 'delta_t_pace':
       return 'After baro sync: trail shows where lap B is gaining (green) or losing (red) time vs A per meter along the run — not raw GPS overlap.'
     case 'vz_lap_compare':
       return 'Baseline lap (run 1): solid trail, one color. Compare lap (run 2): heat along the GPS path — orange where you were faster down vs baseline, blue where slower. (Other trail-color modes color every lap by that metric.)'
-    case 'braking':
-      return 'Colors show braking intensity from longitudinal acceleration.'
-    case 'lean_mtb':
-      return 'Colors show estimated lean angle from gravity in the bike frame.'
     case 'vz':
-    default:
       return 'Colors show display Vz (0.5 Hz LPF + 1.5s SG on baro vertical rate). RdBu scale −8…+1 m/s (clips); Bernoulli is not in Vz.'
   }
 }
@@ -362,14 +325,8 @@ function tightGpsView(
 /** Robust Plotly cmin/cmax: pooled across all laps for consistent legend; outliers clip at ends. */
 function trailMapColorBounds(allZ: number[], metric: TrailColorMetric): [number, number] | undefined {
   switch (metric) {
-    case 'g':
-      return [0.5, 4.0]
     case 'vz':
       return [VZ_DISPLAY_CMIN, VZ_DISPLAY_CMAX]
-    case 'variance':
-      return robustColorScaleRange(allZ, { lowPct: 2, highPct: 98, minSpan: 0.05, clampLow: 0, clampHigh: 12 })
-    case 'jerk':
-      return robustColorScaleRange(allZ, { lowPct: 2, highPct: 98, minSpan: 1, clampLow: 0, clampHigh: 150 })
     case 'delta_t':
       return robustColorScaleRange(allZ, {
         symmetricAroundZero: true,
@@ -394,12 +351,6 @@ function trailMapColorBounds(allZ: number[], metric: TrailColorMetric): [number,
         minSpan: 1e-5,
         clampHigh: 0.2,
       })
-    case 'braking':
-      return robustColorScaleRange(allZ, { lowPct: 2, highPct: 98, minSpan: 0.4, clampLow: 0, clampHigh: 20 })
-    case 'lean_mtb':
-      return robustColorScaleRange(allZ, { lowPct: 2, highPct: 98, minSpan: 4, clampLow: 0, clampHigh: 62 })
-    default:
-      return robustColorScaleRange(allZ, { lowPct: 2, highPct: 98, minSpan: 1 })
   }
 }
 
@@ -410,22 +361,7 @@ function colorscaleFor(metric: TrailColorMetric): string | [number, string][] {
       return 'RdBu'
     case 'delta_t_pace':
       return 'RdYlGn'
-    case 'variance':
-    case 'jerk':
-      return 'YlOrRd'
-    case 'braking':
-      return 'YlOrRd'
-    case 'lean_mtb':
-      return [
-        [0, '#0f172a'],
-        [0.35, '#1d4ed8'],
-        [0.65, '#6366f1'],
-        [1, '#7e22ce'],
-      ] as [number, string][]
-    case 'g':
-      return 'Viridis'
     case 'vz':
-    default:
       return 'RdBu'
   }
 }

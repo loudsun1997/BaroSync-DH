@@ -2,20 +2,17 @@ import type { PlotMouseEvent } from 'plotly.js'
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
 import { createPortal } from 'react-dom'
 import { collectFiniteYFromTraces, robustYAxisRange } from './chartScales'
-import { plotlyDistanceExplorerConfig, plotlyInteractionConfig } from './plotlyConfig'
+import { plotlyDistanceExplorerConfig } from './plotlyConfig'
 import { Plot } from './plotlyFactory'
 import { distanceSeries } from './distanceUtils'
 import {
   altitudeChartSeries,
-  hasFiniteNumericInColumn,
-  mapNumericColumn,
-  orientationRadAt,
   speedKmhSeries,
   telemetryLen,
   vzDisplaySeries,
 } from './telemetryAccess'
 import { computeTrailSectorsSimple } from './trailSectors'
-import type { ComparisonPayload, RunResult, TelemetryPoint } from './types'
+import type { ComparisonPayload, RunResult } from './types'
 
 const PLOT_PAPER = '#fafbfc'
 const PLOT_BG = '#ffffff'
@@ -72,8 +69,6 @@ function distanceOverlayShapes(runs: RunResult[], activeDisplayM: number | null)
   )
   return activeDisplayM != null ? [...rects, vlineShape(activeDisplayM)] : rects
 }
-
-const RAD_TO_DEG = 180 / Math.PI
 
 /** Cap chart→map scrub updates (large uploads + Plotly hover are expensive). */
 const ALTITUDE_SCRUB_MIN_INTERVAL_MS = 72
@@ -234,48 +229,6 @@ function DistanceChartShell({
   )
 }
 
-function hasFiniteNumeric(runs: RunResult[], key: keyof TelemetryPoint): boolean {
-  return runs.some((r) => hasFiniteNumericInColumn(r.telemetry, key))
-}
-
-function hasXyz(
-  runs: RunResult[],
-  kx: keyof TelemetryPoint,
-  ky: keyof TelemetryPoint,
-  kz: keyof TelemetryPoint,
-): boolean {
-  return hasFiniteNumeric(runs, kx) && hasFiniteNumeric(runs, ky) && hasFiniteNumeric(runs, kz)
-}
-
-/** True when any optional IMU / gyro / orientation distance charts could render. */
-function runsHaveExtraSensorCharts(runs: RunResult[]): boolean {
-  return (
-    hasXyz(runs, 'acc_x_filt', 'acc_y_filt', 'acc_z_filt') ||
-    hasXyz(runs, 'total_acc_x_filt', 'total_acc_y_filt', 'total_acc_z_filt') ||
-    hasXyz(runs, 'gyro_x_filt', 'gyro_y_filt', 'gyro_z_filt') ||
-    hasXyz(runs, 'gravity_x_filt', 'gravity_y_filt', 'gravity_z_filt') ||
-    hasXyz(runs, 'acc_uncal_x_filt', 'acc_uncal_y_filt', 'acc_uncal_z_filt') ||
-    hasXyz(runs, 'gyro_uncal_x_filt', 'gyro_uncal_y_filt', 'gyro_uncal_z_filt') ||
-    hasFiniteNumeric(runs, 'roll_rad_filt') ||
-    hasFiniteNumeric(runs, 'roll_rad') ||
-    hasFiniteNumeric(runs, 'pitch_rad_filt') ||
-    hasFiniteNumeric(runs, 'pitch_rad') ||
-    hasFiniteNumeric(runs, 'yaw_rad_filt') ||
-    hasFiniteNumeric(runs, 'yaw_rad')
-  )
-}
-
-function hoverSyncByTraceCount(traceCount: number, syncDisplayM: (m: number | null) => void) {
-  return (ev: PlotMouseEvent) => {
-    const p = ev.points?.[0]
-    if (p?.x == null) return
-    const cn = p.curveNumber
-    if (cn >= 0 && cn < traceCount && typeof p.x === 'number') {
-      syncDisplayM(p.x)
-    }
-  }
-}
-
 type Props = {
   runs: RunResult[]
   activeDisplayM: number | null
@@ -298,9 +251,6 @@ export function TelemetryCharts({
   yPercentileHigh,
   vzClampHighSuggested,
 }: Props) {
-  const [showExtraSensorCharts, setShowExtraSensorCharts] = useState(false)
-  const hasExtraSensorData = useMemo(() => runsHaveExtraSensorCharts(runs), [runs])
-
   const lastSyncedDisplayMRef = useRef<number | null>(null)
   useEffect(() => {
     if (activeDisplayM != null && Number.isFinite(activeDisplayM)) {
@@ -714,331 +664,7 @@ export function TelemetryCharts({
           />
         </DistanceChartShell>
       </div>
-
-      {hasExtraSensorData && (
-        <div className="charts-extra-sensor-toggle">
-          <button
-            type="button"
-            className="charts-extra-sensor-btn"
-            aria-expanded={showExtraSensorCharts}
-            onClick={() => setShowExtraSensorCharts((v) => !v)}
-          >
-            {showExtraSensorCharts
-              ? 'Hide extra sensor charts'
-              : 'Show extra sensor charts (IMU, gyro, orientation, …)'}
-          </button>
-        </div>
-      )}
-
-      {showExtraSensorCharts && hasExtraSensorData && (
-        <ExtraSensorCharts
-          runs={runs}
-          onActiveDisplayM={syncDisplayMFromHover}
-          chartDataRevision={chartDataRevision}
-          distShapes={distShapes}
-          yPercentileLow={yPercentileLow}
-          yPercentileHigh={yPercentileHigh}
-        />
-      )}
     </div>
-  )
-}
-
-function ExtraSensorCharts({
-  runs,
-  onActiveDisplayM,
-  chartDataRevision,
-  distShapes,
-  yPercentileLow,
-  yPercentileHigh,
-}: {
-  runs: RunResult[]
-  onActiveDisplayM: (m: number | null) => void
-  chartDataRevision: string
-  distShapes: object[]
-  yPercentileLow: number
-  yPercentileHigh: number
-}) {
-  if (!runsHaveExtraSensorCharts(runs)) return null
-
-  return (
-    <>
-      <h3 className="sensor-section-title">
-        More sensors vs distance (IMU, gravity, orientation). Y-axes use ~{yPercentileLow}th–{yPercentileHigh}th
-        percentile (adjust in the bar above) with soft caps so spikes do not flatten the run; extremes can clip at the top
-        or bottom of the frame.
-      </h3>
-      <XyzDistancePlot
-        runs={runs}
-        title="Linear acceleration (Accelerometer · filtered)"
-        yTitle="m/s²"
-        keys={['acc_x_filt', 'acc_y_filt', 'acc_z_filt']}
-        yClampHigh={56}
-        yMinSpan={3}
-        onActiveDisplayM={onActiveDisplayM}
-        chartDataRevision={chartDataRevision}
-        uirevision="chart-acc-lin"
-        distShapes={distShapes}
-        yPercentileLow={yPercentileLow}
-        yPercentileHigh={yPercentileHigh}
-      />
-      <XyzDistancePlot
-        runs={runs}
-        title="Total acceleration (includes gravity · filtered)"
-        yTitle="m/s²"
-        keys={['total_acc_x_filt', 'total_acc_y_filt', 'total_acc_z_filt']}
-        yClampHigh={90}
-        yMinSpan={4}
-        onActiveDisplayM={onActiveDisplayM}
-        chartDataRevision={chartDataRevision}
-        uirevision="chart-acc-total"
-        distShapes={distShapes}
-        yPercentileLow={yPercentileLow}
-        yPercentileHigh={yPercentileHigh}
-      />
-      <XyzDistancePlot
-        runs={runs}
-        title="Gyroscope (filtered)"
-        yTitle="rad/s"
-        keys={['gyro_x_filt', 'gyro_y_filt', 'gyro_z_filt']}
-        yClampHigh={24}
-        yMinSpan={0.4}
-        onActiveDisplayM={onActiveDisplayM}
-        chartDataRevision={chartDataRevision}
-        uirevision="chart-gyro"
-        distShapes={distShapes}
-        yPercentileLow={yPercentileLow}
-        yPercentileHigh={yPercentileHigh}
-      />
-      <XyzDistancePlot
-        runs={runs}
-        title="Gravity vector (filtered)"
-        yTitle="m/s²"
-        keys={['gravity_x_filt', 'gravity_y_filt', 'gravity_z_filt']}
-        yClampHigh={18}
-        yMinSpan={2}
-        onActiveDisplayM={onActiveDisplayM}
-        chartDataRevision={chartDataRevision}
-        uirevision="chart-gravity"
-        distShapes={distShapes}
-        yPercentileLow={yPercentileLow}
-        yPercentileHigh={yPercentileHigh}
-      />
-      <XyzDistancePlot
-        runs={runs}
-        title="Accelerometer uncalibrated (filtered)"
-        yTitle="m/s²"
-        keys={['acc_uncal_x_filt', 'acc_uncal_y_filt', 'acc_uncal_z_filt']}
-        yClampHigh={85}
-        yMinSpan={4}
-        onActiveDisplayM={onActiveDisplayM}
-        chartDataRevision={chartDataRevision}
-        uirevision="chart-acc-uncal"
-        distShapes={distShapes}
-        yPercentileLow={yPercentileLow}
-        yPercentileHigh={yPercentileHigh}
-      />
-      <XyzDistancePlot
-        runs={runs}
-        title="Gyroscope uncalibrated (filtered)"
-        yTitle="rad/s"
-        keys={['gyro_uncal_x_filt', 'gyro_uncal_y_filt', 'gyro_uncal_z_filt']}
-        yClampHigh={28}
-        yMinSpan={0.5}
-        onActiveDisplayM={onActiveDisplayM}
-        chartDataRevision={chartDataRevision}
-        uirevision="chart-gyro-uncal"
-        distShapes={distShapes}
-        yPercentileLow={yPercentileLow}
-        yPercentileHigh={yPercentileHigh}
-      />
-      <OrientationDegPlot
-        runs={runs}
-        onActiveDisplayM={onActiveDisplayM}
-        chartDataRevision={chartDataRevision}
-        distShapes={distShapes}
-        yPercentileLow={yPercentileLow}
-        yPercentileHigh={yPercentileHigh}
-      />
-    </>
-  )
-}
-
-function XyzDistancePlot({
-  runs,
-  title,
-  yTitle,
-  keys,
-  yClampHigh,
-  yMinSpan = 2,
-  onActiveDisplayM,
-  chartDataRevision,
-  uirevision,
-  distShapes,
-  yPercentileLow,
-  yPercentileHigh,
-}: {
-  runs: RunResult[]
-  title: string
-  yTitle: string
-  keys: [keyof TelemetryPoint, keyof TelemetryPoint, keyof TelemetryPoint]
-  /** Soft ceiling on axis top (m/s² or rad/s scale); outliers can clip */
-  yClampHigh?: number
-  yMinSpan?: number
-  onActiveDisplayM: (m: number | null) => void
-  chartDataRevision: string
-  uirevision: string
-  distShapes: object[]
-  yPercentileLow: number
-  yPercentileHigh: number
-}) {
-  const [kx, ky, kz] = keys
-  if (!hasXyz(runs, kx, ky, kz)) return null
-  const axisNames = ['X', 'Y', 'Z']
-  const data = runs.flatMap((run, ri) =>
-    keys.map((key, ai) => ({
-      x: distanceSeries(run.telemetry),
-      y: mapNumericColumn(run.telemetry, key),
-      type: 'scatter' as const,
-      mode: 'lines' as const,
-      name: `${run.label ?? `Run ${ri + 1}`} · ${axisNames[ai]}`,
-      line: {
-        color: AXIS_LINE_COLORS[ai],
-        width: 2,
-        dash: ri === 0 ? ('solid' as const) : ('dash' as const),
-      },
-    })),
-  )
-  const traceCount = data.length
-  const yRange = robustYAxisRange(collectFiniteYFromTraces(data), {
-    lowPct: yPercentileLow,
-    highPct: yPercentileHigh,
-    padFraction: 0.08,
-    minSpan: yMinSpan,
-    clampHigh: yClampHigh ?? null,
-  })
-  return (
-    <Plot
-      data={data}
-      layout={{
-        ...baseLayout,
-        uirevision,
-        margin: { t: 28, r: 24, b: 40, l: 52 },
-        title: { text: title, font: { color: PLOT_TEXT, size: 13 } },
-        xaxis: { ...baseLayout.xaxis, title: { text: 'Distance (m)' } },
-        yaxis: {
-          ...baseLayout.yaxis,
-          title: { text: yTitle },
-          ...(yRange ? { range: yRange } : {}),
-        },
-        showlegend: traceCount > 1,
-        datarevision: chartDataRevision,
-        shapes: distShapes,
-      }}
-      config={plotlyInteractionConfig}
-      style={{ width: '100%', height: 220 }}
-      onHover={hoverSyncByTraceCount(traceCount, onActiveDisplayM)}
-    />
-  )
-}
-
-function OrientationDegPlot({
-  runs,
-  onActiveDisplayM,
-  chartDataRevision,
-  distShapes,
-  yPercentileLow,
-  yPercentileHigh,
-}: {
-  runs: RunResult[]
-  onActiveDisplayM: (m: number | null) => void
-  chartDataRevision: string
-  distShapes: object[]
-  yPercentileLow: number
-  yPercentileHigh: number
-}) {
-  const components: {
-    label: string
-    filt: keyof TelemetryPoint
-    raw: keyof TelemetryPoint
-  }[] = [
-    { label: 'Roll', filt: 'roll_rad_filt', raw: 'roll_rad' },
-    { label: 'Pitch', filt: 'pitch_rad_filt', raw: 'pitch_rad' },
-    { label: 'Yaw', filt: 'yaw_rad_filt', raw: 'yaw_rad' },
-  ]
-  const active = components.filter((c) =>
-    runs.some((r) => {
-      const tel = r.telemetry
-      const n = telemetryLen(tel)
-      for (let i = 0; i < n; i++) {
-        const rad = orientationRadAt(tel, i, c.filt, c.raw)
-        if (Number.isFinite(rad)) return true
-      }
-      return false
-    }),
-  )
-  if (!active.length) return null
-
-  const oriColorIdx = (label: string) =>
-    label === 'Roll' ? 0 : label === 'Pitch' ? 1 : 2
-  const data = runs.flatMap((run, ri) =>
-    active.map((c) => {
-      const tel = run.telemetry
-      const x = distanceSeries(tel)
-      const n = telemetryLen(tel)
-      const y = new Array<number>(n)
-      for (let i = 0; i < n; i++) {
-        const rad = orientationRadAt(tel, i, c.filt, c.raw)
-        y[i] = Number.isFinite(rad) ? rad * RAD_TO_DEG : 0
-      }
-      return {
-        x,
-        y,
-        type: 'scatter' as const,
-        mode: 'lines' as const,
-        name: `${run.label ?? `Run ${ri + 1}`} · ${c.label}`,
-        line: {
-          color: AXIS_LINE_COLORS[oriColorIdx(c.label)],
-          width: 2,
-          dash: ri === 0 ? ('solid' as const) : ('dash' as const),
-        },
-      }
-    }),
-  )
-  const traceCount = data.length
-  const oriYRange = robustYAxisRange(collectFiniteYFromTraces(data), {
-    lowPct: yPercentileLow,
-    highPct: yPercentileHigh,
-    padFraction: 0.06,
-    minSpan: 8,
-    clampLow: -180,
-    clampHigh: 180,
-  })
-  return (
-    <Plot
-      data={data}
-      layout={{
-        ...baseLayout,
-        uirevision: 'chart-orientation',
-        margin: { t: 28, r: 24, b: 40, l: 52 },
-        title: {
-          text: 'Orientation (Orientation.csv · filtered when available, degrees)',
-          font: { color: PLOT_TEXT, size: 13 },
-        },
-        xaxis: { ...baseLayout.xaxis, title: { text: 'Distance (m)' } },
-        yaxis: {
-          ...baseLayout.yaxis,
-          title: { text: 'deg' },
-          ...(oriYRange ? { range: oriYRange } : {}),
-        },
-        showlegend: traceCount > 1,
-        datarevision: chartDataRevision,
-        shapes: distShapes,
-      }}
-      config={plotlyInteractionConfig}
-      style={{ width: '100%', height: 220 }}
-      onHover={hoverSyncByTraceCount(traceCount, onActiveDisplayM)}
-    />
   )
 }
 

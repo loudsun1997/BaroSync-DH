@@ -17,28 +17,19 @@ export type TelemetryPoint = {
   speed_m_s?: number | null
   distance_m?: number | null
   time_s?: number | null
-  g_total?: number | null
-  linear_accel_magnitude_ms2?: number | null
   total_accel_magnitude_ms2?: number | null
-  gyro_magnitude_rad_s?: number | null
   acc_x?: number | null
   acc_y?: number | null
   acc_z?: number | null
   acc_x_filt?: number | null
   acc_y_filt?: number | null
   acc_z_filt?: number | null
+  total_acc_x?: number | null
+  total_acc_y?: number | null
+  total_acc_z?: number | null
   total_acc_x_filt?: number | null
   total_acc_y_filt?: number | null
   total_acc_z_filt?: number | null
-  gyro_x_filt?: number | null
-  gyro_y_filt?: number | null
-  gyro_z_filt?: number | null
-  acc_uncal_x_filt?: number | null
-  acc_uncal_y_filt?: number | null
-  acc_uncal_z_filt?: number | null
-  gyro_uncal_x_filt?: number | null
-  gyro_uncal_y_filt?: number | null
-  gyro_uncal_z_filt?: number | null
   gravity_x_filt?: number | null
   gravity_y_filt?: number | null
   gravity_z_filt?: number | null
@@ -46,25 +37,7 @@ export type TelemetryPoint = {
   relative_altitude_app_m?: number | null
   sanity_pressure_minus_app_m?: number | null
   gps_wgs84_anchor_offset_m?: number | null
-  roll_rad?: number | null
-  roll_rad_filt?: number | null
-  pitch_rad?: number | null
-  pitch_rad_filt?: number | null
-  yaw_rad?: number | null
-  yaw_rad_filt?: number | null
-  lean_angle_deg?: number | null
-  berm_expected_lateral_ms2?: number | null
-  berm_measured_lateral_ms2?: number | null
-  berm_balance_ratio?: number | null
-  jerk_magnitude_ms3?: number | null
-  vz_rolling_std?: number | null
-  mtb_raw_total_g?: number | null
-  /** ‖total_acc‖ / g (includes gravity); used for jump / landing physics. */
-  mtb_total_accel_g?: number | null
-  mtb_lean_deg?: number | null
-  mtb_braking_ma_ms2?: number | null
-  mtb_braking_intensity?: number | null
-  mtb_braking_active?: boolean | null
+  gps_wgs84_residual_m?: number | null
 }
 
 export type BrakingIntervalM = { start_m: number; end_m: number }
@@ -91,7 +64,6 @@ export type MapColorBounds = { cmin: number; cmax: number }
 
 export type VizHints = {
   map: {
-    g?: MapColorBounds
     vz?: MapColorBounds
   }
   charts?: {
@@ -202,13 +174,32 @@ export type UploadJobStatus = {
   error?: string
 }
 
-export type TrailColorMetric =
-  | 'vz'
-  | 'g'
-  | 'variance'
-  | 'jerk'
-  | 'delta_t'
-  | 'delta_t_pace'
-  | 'vz_lap_compare'
-  | 'braking'
-  | 'lean_mtb'
+/** POST /synthesize-baseline — N-run canonical 1D reference (distance-indexed). */
+export type CanonicalReference = {
+  distance_m: (number | null)[]
+  elevation_m: (number | null)[]
+  vz_m_s: (number | null)[]
+  grade_m_per_m: (number | null)[]
+  confidence_band_m: {
+    sigma_m: (number | null)[]
+    lower_m: (number | null)[]
+    upper_m: (number | null)[]
+  }
+  reliability_score: (number | null)[]
+  meta: {
+    run_count: number
+    distance_step_m: number
+    distance_count: number
+    sample_rate_hz_by_run: number[]
+    alignment: string
+    mean_shape: string
+    finalizer: string
+    gpr_kernel?: string
+  }
+}
+
+export type SynthesizeBaselineResponse = {
+  canonical_reference: CanonicalReference
+}
+
+export type TrailColorMetric = 'vz' | 'delta_t' | 'delta_t_pace' | 'vz_lap_compare'

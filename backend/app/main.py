@@ -9,15 +9,17 @@ from typing import Any
 from fastapi import BackgroundTasks, FastAPI, File, HTTPException, Query, Request, UploadFile
 from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, ValidationError
 
 from app.processing.baro_align import (
     align_runs_at_gate_baro,
     build_comparison_payload,
     preview_gate_snap,
+    telemetry_payload_to_dataframe,
     telemetry_records_to_dataframe,
     telemetry_records_to_dataframe_preview,
 )
+from app.processing.baseline_synthesis import synthesize_canonical_reference
 from app.processing.pipeline import (
     RUN_COLORS,
     ordinal_run_label,
@@ -85,6 +87,14 @@ class PreviewGateRequest(BaseModel):
     gate_half_width_m: float = Field(default=12.0, ge=2.0, le=80.0)
     run_a_telemetry: Any
     run_b_telemetry: Any
+
+
+class SynthesizeBaselineRequest(BaseModel):
+    telemetry_runs: list[Any] = Field(
+        min_length=2,
+        description="List of processed telemetry payloads, each either row records or a column-oriented telemetry object.",
+    )
+    distance_step_m: float = Field(default=1.0, gt=0.0, le=10.0)
 
 
 @app.get("/health")
@@ -238,6 +248,37 @@ def align_baro(body: AlignBaroRequest):
         "run_count": 2,
         "alignment": meta,
     }
+
+
+@app.post("/synthesize-baseline")
+def synthesize_baseline(body: SynthesizeBaselineRequest):
+    """
+    Build an N-run canonical 1D reference trail.
+
+    Input telemetry can be the same column-oriented dictionaries emitted by the
+    upload pipeline. GPS is used only for cumulative distance; pressure + IMU
+    produce the canonical elevation and Vz maps.
+
+    Note: the body must be a JSON object with ``telemetry_runs`` (use ``Body()``
+    / ``SynthesizeBaselineRequest``) — a bare top-level array is not accepted.
+    """
+    try:
+        frames = [
+            telemetry_payload_to_dataframe(p, require_vz=False) for p in body.telemetry_runs
+        ]
+    except (ValueError, ValidationError) as e:
+        logger.exception("synthesize-baseline: bad telemetry payload")
+        raise HTTPException(status_code=400, detail=str(e)) from e
+    try:
+        return {
+            "canonical_reference": synthesize_canonical_reference(
+                frames,
+                distance_step_m=body.distance_step_m,
+            )
+        }
+    except ValueError as e:
+        logger.exception("synthesize-baseline: synthesis failed")
+        raise HTTPException(status_code=400, detail=str(e)) from e
 
 
 @app.post("/process-data-folder")

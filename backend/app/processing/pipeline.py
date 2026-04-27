@@ -19,7 +19,7 @@ ProgressCallback = Callable[[str, int], None]
 import numpy as np
 import pandas as pd
 
-from app.processing.constants import STANDARD_GRAVITY_MS2, hypsometric_altitude_m
+from app.processing.constants import hypsometric_altitude_m
 from app.processing.dsp import (
     bernoulli_correction_mbar,
     butterworth_lowpass,
@@ -277,15 +277,11 @@ def process_highfreq_frame(
                 merged[gc].to_numpy(dtype=np.float64), fs_hz=fs, cutoff_hz=3.0, order=4
             )
 
-    _motion_axis_pat = re.compile(
-        r"^((?:total_acc|gyro|acc_uncal|gyro_uncal)_[xyz])(_filt)?$"
-    )
-    for col in list(merged.columns):
-        m = _motion_axis_pat.match(col)
-        if m and m.group(2) is None:
-            base = m.group(1)
-            merged[f"{base}_filt"] = butterworth_lowpass(
-                merged[col].to_numpy(dtype=np.float64), fs_hz=fs, cutoff_hz=4.0, order=2
+    for ax in ("x", "y", "z"):
+        tc = f"total_acc_{ax}"
+        if tc in merged.columns:
+            merged[f"{tc}_filt"] = butterworth_lowpass(
+                merged[tc].to_numpy(dtype=np.float64), fs_hz=fs, cutoff_hz=4.0, order=2
             )
 
     if all(c in merged.columns for c in ("total_acc_x_filt", "total_acc_y_filt", "total_acc_z_filt")):
@@ -295,52 +291,10 @@ def process_highfreq_frame(
             + merged["total_acc_z_filt"] ** 2
         )
 
-    if all(c in merged.columns for c in ("gyro_x_filt", "gyro_y_filt", "gyro_z_filt")):
-        merged["gyro_magnitude_rad_s"] = np.sqrt(
-            merged["gyro_x_filt"] ** 2 + merged["gyro_y_filt"] ** 2 + merged["gyro_z_filt"] ** 2
-        )
-
-    if all(c in merged.columns for c in ("acc_x_filt", "acc_y_filt", "acc_z_filt")):
-        merged["linear_accel_magnitude_ms2"] = np.sqrt(
-            merged["acc_x_filt"] ** 2 + merged["acc_y_filt"] ** 2 + merged["acc_z_filt"] ** 2
-        )
-        merged["g_total"] = merged["linear_accel_magnitude_ms2"] / STANDARD_GRAVITY_MS2
-        t_sec = merged["unix_ns"].astype(np.float64) * 1e-9
-        ax = merged["acc_x_filt"].to_numpy(dtype=np.float64)
-        ay = merged["acc_y_filt"].to_numpy(dtype=np.float64)
-        az = merged["acc_z_filt"].to_numpy(dtype=np.float64)
-        jx = np.gradient(np.nan_to_num(ax, nan=0.0), t_sec)
-        jy = np.gradient(np.nan_to_num(ay, nan=0.0), t_sec)
-        jz = np.gradient(np.nan_to_num(az, nan=0.0), t_sec)
-        merged["jerk_magnitude_ms3"] = np.sqrt(jx * jx + jy * jy + jz * jz)
-
-    if "roll_rad" in merged.columns:
-        merged["roll_rad_filt"] = butterworth_lowpass(
-            merged["roll_rad"].to_numpy(dtype=np.float64), fs_hz=fs, cutoff_hz=4.0, order=2
-        )
-        roll = merged["roll_rad_filt"].to_numpy(dtype=np.float64)
-        merged["lean_angle_deg"] = np.degrees(roll)
-        g = STANDARD_GRAVITY_MS2
-        expected_lat = g * np.tan(np.clip(roll, -1.25, 1.25))
-        merged["berm_expected_lateral_ms2"] = expected_lat
-        if all(c in merged.columns for c in ("acc_x_filt", "acc_y_filt")):
-            measured_lat = np.sqrt(merged["acc_x_filt"] ** 2 + merged["acc_y_filt"] ** 2)
-            merged["berm_measured_lateral_ms2"] = measured_lat
-            merged["berm_balance_ratio"] = measured_lat / np.maximum(np.abs(expected_lat), 0.75)
-
-    for ori_col in ("pitch_rad", "yaw_rad"):
-        if ori_col in merged.columns:
-            merged[f"{ori_col}_filt"] = butterworth_lowpass(
-                merged[ori_col].to_numpy(dtype=np.float64), fs_hz=fs, cutoff_hz=4.0, order=2
-            )
-
     merged["distance_m"] = cumulative_distance_m(
         merged["latitude"].to_numpy(), merged["longitude"].to_numpy()
     )
     merged["time_s"] = (merged["unix_ns"].astype(np.float64) - float(merged["unix_ns"].iloc[0])) * 1e-9
-    vz_series = pd.Series(merged["vz_m_s"].to_numpy(dtype=np.float64))
-    win_vz = max(3, int(fs * 0.5))
-    merged["vz_rolling_std"] = vz_series.rolling(win_vz, center=True, min_periods=1).std().to_numpy(dtype=np.float64)
     # Display-only: heavy LPF + SG kills suspension-band chatter for map / elevation heat profile (MTB uses vz_m_s).
     vz_lp_vis = butterworth_lowpass(
         merged["vz_m_s"].to_numpy(dtype=np.float64), fs_hz=fs, cutoff_hz=0.5, order=2
@@ -357,8 +311,12 @@ def process_highfreq_frame(
     return merged
 
 
+_IMU_EXPORT_PAT = re.compile(r"^(?:acc|total_acc|gravity)_[xyz](?:_filt)?$")
+
+
 def _telemetry_export_column_names(df: pd.DataFrame) -> list[str]:
-    cols = [
+    """Per-sample API columns: core trail + baro/IMU used for synthesis/alignment; omits map-only extras."""
+    head = [
         "unix_ns",
         "latitude",
         "longitude",
@@ -370,48 +328,25 @@ def _telemetry_export_column_names(df: pd.DataFrame) -> list[str]:
         "distance_m",
         "time_s",
     ]
-    extra = [
-        c
-        for c in (
-            "g_total",
-            "linear_accel_magnitude_ms2",
-            "total_accel_magnitude_ms2",
-            "gyro_magnitude_rad_s",
-            "pressure_mbar",
-            "relative_altitude_app_m",
-            "sanity_pressure_minus_app_m",
-            "gps_wgs84_anchor_offset_m",
-            "gps_wgs84_residual_m",
-            "roll_rad",
-            "roll_rad_filt",
-            "pitch_rad",
-            "pitch_rad_filt",
-            "yaw_rad",
-            "yaw_rad_filt",
-            "lean_angle_deg",
-            "berm_expected_lateral_ms2",
-            "berm_measured_lateral_ms2",
-            "berm_balance_ratio",
-            "jerk_magnitude_ms3",
-            "vz_rolling_std",
-            "mtb_raw_total_g",
-            "mtb_total_accel_g",
-            "mtb_lean_deg",
-            "mtb_braking_ma_ms2",
-            "mtb_braking_intensity",
-            "mtb_braking_active",
-        )
-        if c in df.columns
+    tail_meta = [
+        "pressure_mbar",
+        "relative_altitude_app_m",
+        "sanity_pressure_minus_app_m",
+        "gps_wgs84_anchor_offset_m",
+        "gps_wgs84_residual_m",
     ]
-    motion_pat = re.compile(
-        r"^(?:acc|total_acc|gyro|acc_uncal|gyro_uncal|gravity)_[xyz](?:_filt)?$"
-    )
+    out: list[str] = []
+    for c in head + tail_meta:
+        if c in df.columns:
+            out.append(c)
     for c in sorted(df.columns):
-        if c in cols or c in extra:
+        if c in out:
             continue
-        if motion_pat.match(c):
-            extra.append(c)
-    return [c for c in cols + extra if c in df.columns]
+        if _IMU_EXPORT_PAT.match(c):
+            out.append(c)
+    if "total_accel_magnitude_ms2" in df.columns and "total_accel_magnitude_ms2" not in out:
+        out.append("total_accel_magnitude_ms2")
+    return out
 
 
 def decimate_dataframe_for_export(df: pd.DataFrame, max_hz: float) -> pd.DataFrame:

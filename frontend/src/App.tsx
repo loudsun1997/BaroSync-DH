@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { ChartPercentileControls } from './ChartPercentileControls'
 import { VerticalSpeedCompareSummary } from './VerticalSpeedCompareSummary'
+import { CanonicalBaselinePanel } from './CanonicalBaselinePanel'
 import { GpsTrailPlot } from './GpsTrailPlot'
 import { TelemetryCharts } from './TelemetryCharts'
 import { CHART_PERCENTILE_DEFAULTS } from './chartScales'
@@ -19,8 +20,16 @@ import {
   MAX_LEAN_TOOLTIP,
   syncQualityFromPeak,
 } from './riderMetrics'
-import { hasFiniteNumericInColumn, telemetryLen } from './telemetryAccess'
-import type { GatePreview, TrailColorMetric, UploadJobStart, UploadJobStatus, UploadResponse } from './types'
+import { telemetryLen } from './telemetryAccess'
+import type {
+  CanonicalReference,
+  GatePreview,
+  SynthesizeBaselineResponse,
+  TrailColorMetric,
+  UploadJobStart,
+  UploadJobStatus,
+  UploadResponse,
+} from './types'
 import './App.css'
 
 const UPLOAD_POLL_MS = 200
@@ -71,6 +80,9 @@ export default function App() {
   })
   const [alignFlash, setAlignFlash] = useState(false)
   const hadAlignmentRef = useRef(false)
+  const [canonicalRef, setCanonicalRef] = useState<CanonicalReference | null>(null)
+  const [baselineBusy, setBaselineBusy] = useState(false)
+  const [baselineErr, setBaselineErr] = useState<string | null>(null)
 
   const runs = data?.runs ?? []
 
@@ -110,18 +122,6 @@ export default function App() {
       setColorMetric('vz')
     }
   }, [data?.comparison, colorMetric])
-
-  const hasMtbLean = runs.some((r) => hasFiniteNumericInColumn(r.telemetry, 'mtb_lean_deg'))
-  const hasMtbBraking = runs.some((r) => hasFiniteNumericInColumn(r.telemetry, 'mtb_braking_ma_ms2'))
-
-  useEffect(() => {
-    if (colorMetric === 'lean_mtb' && runs.length > 0 && !hasMtbLean) {
-      setColorMetric('vz')
-    }
-    if (colorMetric === 'braking' && runs.length > 0 && !hasMtbBraking) {
-      setColorMetric('vz')
-    }
-  }, [colorMetric, hasMtbLean, hasMtbBraking, runs.length])
 
   useEffect(() => {
     if (gateLat == null || gateLon == null || !rawUpload?.runs || rawUpload.runs.length < 2) {
@@ -183,6 +183,8 @@ export default function App() {
     setGateLat(null)
     setGateLon(null)
     setGatePickMode(false)
+    setCanonicalRef(null)
+    setBaselineErr(null)
   }, [])
 
   const runUpload = useCallback(
@@ -274,12 +276,41 @@ export default function App() {
       setData(json)
       setActiveDisplayM(null)
       setGatePickMode(false)
+      setCanonicalRef(null)
+      setBaselineErr(null)
     } catch (e) {
       setErr(e instanceof Error ? e.message : 'Baro sync failed')
     } finally {
       setBusy(false)
     }
   }, [rawUpload, gateLat, gateLon])
+
+  const synthesizeBaseline = useCallback(async () => {
+    const src = data ?? rawUpload
+    if (!src?.runs || src.runs.length < 2) return
+    setBaselineErr(null)
+    setBaselineBusy(true)
+    try {
+      const res = await fetch('/synthesize-baseline', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          telemetry_runs: src.runs.map((r) => r.telemetry),
+          distance_step_m: 1,
+        }),
+      })
+      if (!res.ok) {
+        const j = (await res.json().catch(() => ({}))) as { detail?: string }
+        throw new Error(typeof j.detail === 'string' ? j.detail : res.statusText)
+      }
+      const json = (await res.json()) as SynthesizeBaselineResponse
+      setCanonicalRef(json.canonical_reference)
+    } catch (e) {
+      setBaselineErr(e instanceof Error ? e.message : 'Synthesis failed')
+    } finally {
+      setBaselineBusy(false)
+    }
+  }, [data, rawUpload])
 
   const riderInsight = useMemo(() => buildRiderInsight(runs), [runs])
 
@@ -474,20 +505,11 @@ export default function App() {
               <option value="vz_lap_compare" disabled={runs.length < 2}>
                 Lap compare — run 1 solid line, run 2 heat vs baseline
               </option>
-              <option value="g">G-force</option>
-              <option value="variance">Vz variance (smoothness)</option>
-              <option value="jerk">Jerk magnitude</option>
               <option value="delta_t" disabled={!data?.comparison}>
                 Time delta (B−A)
               </option>
               <option value="delta_t_pace" disabled={!data?.comparison || runs.length < 2}>
                 d(Δt)/ds on map (after baro — gain/lose heat)
-              </option>
-              <option value="braking" disabled={!hasMtbBraking}>
-                Braking intensity (MTB)
-              </option>
-              <option value="lean_mtb" disabled={!hasMtbLean}>
-                Lean from gravity (MTB)
               </option>
             </select>
           </label>
@@ -634,6 +656,25 @@ export default function App() {
             />
           </div>
         </div>
+      )}
+
+      {runs.length >= 2 && primaryTelemetryLen > 0 && (
+        <section className="canonical-baseline-section" aria-label="Canonical reference trail">
+          <div className="canonical-baseline-toolbar">
+            <h2 className="canonical-baseline-heading">N-run canonical trail</h2>
+            <button
+              type="button"
+              className="upload-btn"
+              disabled={busy || baselineBusy}
+              title="Fuses all uploaded runs: baro + IMU, DTW, SRVF mean, GPR (needs backend: fastdtw, scikit-learn)"
+              onClick={() => void synthesizeBaseline()}
+            >
+              {baselineBusy ? 'Synthesizing…' : 'Synthesize canonical reference'}
+            </button>
+          </div>
+          {baselineErr && <div className="error canonical-baseline-error">{baselineErr}</div>}
+          <CanonicalBaselinePanel reference={canonicalRef} />
+        </section>
       )}
 
       {!data && !busy && (

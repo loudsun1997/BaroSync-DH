@@ -488,6 +488,94 @@ body {
   box-shadow: 0 1px 3px rgba(28, 35, 51, 0.06);
 }
 
+.canonical-baseline-section {
+  margin-top: 1rem;
+  padding: 0.85rem 1rem 1rem;
+  border-radius: 12px;
+  border: 1px solid var(--border);
+  background: var(--bg-card);
+  box-shadow: 0 1px 3px rgba(28, 35, 51, 0.06);
+}
+
+.canonical-baseline-toolbar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.75rem;
+  margin-bottom: 0.65rem;
+}
+
+.canonical-baseline-heading {
+  margin: 0;
+  font-size: 1rem;
+  font-weight: 600;
+  color: var(--text);
+}
+
+.canonical-baseline-error {
+  margin: 0 0 0.65rem;
+}
+
+.canonical-baseline-panel {
+  display: flex;
+  flex-direction: column;
+  gap: 0.75rem;
+}
+
+.canonical-baseline-placeholder {
+  margin: 0;
+  font-size: 0.875rem;
+  color: var(--text-muted);
+  line-height: 1.45;
+}
+
+.canonical-baseline-meta {
+  margin-bottom: 0.25rem;
+}
+
+.canonical-baseline-title {
+  margin: 0 0 0.5rem;
+  font-size: 0.92rem;
+  font-weight: 600;
+  color: var(--text);
+}
+
+.canonical-baseline-dl {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(12rem, 1fr));
+  gap: 0.4rem 1rem;
+  margin: 0 0 0.5rem;
+  font-size: 0.81rem;
+}
+
+.canonical-baseline-dl dt {
+  margin: 0;
+  color: var(--text-muted);
+  font-weight: 600;
+}
+
+.canonical-baseline-dl dd {
+  margin: 0;
+  color: var(--text);
+}
+
+.canonical-baseline-kernel code {
+  font-size: 0.75rem;
+  word-break: break-all;
+}
+
+.canonical-baseline-note {
+  margin: 0;
+  font-size: 0.75rem;
+  line-height: 1.4;
+  color: var(--text-muted);
+}
+
+.canonical-baseline-note code {
+  font-size: 0.72rem;
+}
+
 .chart-percentile-bar {
   margin-bottom: 0.65rem;
   padding: 0.5rem 0.65rem;

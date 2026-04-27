@@ -367,8 +367,7 @@ def apply_mtb_features(
         else:
             stats["max_landing_impact_g"] = 0.0
 
-    # Part A: lateral X — lean from gravity (virtual-level frame), else unfiltered gravity, else roll (Orientation).
-    # Many Sensor Logger exports omit Gravity.csv but include Orientation.csv; roll gives a usable lean magnitude.
+    # Lateral lean (display / stats): gravity-based only (avoids unverified phone-orientation lean).
     def _lean_from_gx_gz(gx: np.ndarray, gz: np.ndarray) -> np.ndarray:
         n_cal = max(3, min(len(gx), int(round(fs_hz * ZERO_CAL_DURATION_S))))
         gx0 = float(np.nanmedian(gx[:n_cal]))
@@ -394,13 +393,6 @@ def apply_mtb_features(
         gx = merged["gravity_x"].to_numpy(dtype=np.float64)
         gz = merged["gravity_z"].to_numpy(dtype=np.float64)
         lean = _lean_from_gx_gz(gx, gz)
-        merged["mtb_lean_deg"] = lean
-        stats["max_lean_deg"] = _lean_stat_max(lean)
-    elif "lean_angle_deg" in merged.columns:
-        # Orientation roll (deg) wraps ±180; fold toward 0–90° bank-style lean, then cap.
-        d = np.abs(merged["lean_angle_deg"].to_numpy(dtype=np.float64))
-        d = np.where(d <= 90.0, d, 180.0 - d)
-        lean = np.clip(d, 0.0, LEAN_CAP_DEG)
         merged["mtb_lean_deg"] = lean
         stats["max_lean_deg"] = _lean_stat_max(lean)
     else:
