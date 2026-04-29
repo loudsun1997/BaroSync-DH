@@ -48,6 +48,7 @@ from app.processing.mtb_processing import (
 from app.processing.spatial import cumulative_distance_m, filter_gps_outliers
 from app.processing.viz_hints import compute_viz_hints
 from app.processing.sync import interp_gps_to_master
+from app.processing.baro_align import align_runs_auto_shared_baro, build_comparison_payload
 
 _log = logging.getLogger(__name__)
 
@@ -531,6 +532,23 @@ def process_session_csv_items(
             )
             procs.append(process_highfreq_frame(hf_per_run[i], gps_frames[i], run_index=i))
 
+    comparison: dict[str, Any] | None = None
+    alignment_meta: dict[str, Any] | None = None
+    if n == 2:
+        _report_progress(progress, "Finding shared trail start/end…", 90)
+        try:
+            procs[0], procs[1], alignment_meta = align_runs_auto_shared_baro(
+                procs[0],
+                procs[1],
+                shared_radius_m=12.0,
+                vz_edge_eps=0.03,
+                correlation_max_distance_m=100.0,
+            )
+            comparison = build_comparison_payload(procs[0], procs[1], ds_m=1.0)
+        except ValueError:
+            _log.exception("Automatic shared-route alignment failed")
+            raise
+
     _report_progress(progress, "Building run payloads…", 93)
 
     runs: list[dict[str, Any]] = []
@@ -546,9 +564,6 @@ def process_session_csv_items(
         rd["color"] = RUN_COLORS[i % len(RUN_COLORS)]
         runs.append(rd)
 
-    # Multi-lap Δt and overlay alignment use barometer cross-correlation + start gate (POST /align-baro).
-    comparison: dict[str, Any] | None = None
-
     if _calc_export_enabled():
         try:
             labs = [ordinal_run_label(i) for i in range(n)]
@@ -562,7 +577,7 @@ def process_session_csv_items(
             _log.exception("calculated_exports write failed")
 
     _report_progress(progress, "Ready", 99)
-    return {"runs": runs, "comparison": comparison, "run_count": n}
+    return {"runs": runs, "comparison": comparison, "run_count": n, "alignment": alignment_meta}
 
 
 def _zip_bytes_to_items(data: bytes, name_prefix: str = "") -> list[tuple[str, pd.DataFrame]]:

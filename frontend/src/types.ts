@@ -87,6 +87,7 @@ export type RunResult = {
   color?: string
   mtb_stats?: MtbStats | null
   braking_intervals_m?: BrakingIntervalM[]
+  gate_preview?: GatePreview | null
   /** From full-rate pipeline; map + chart defaults when present. */
   viz_hints?: VizHints | null
 }
@@ -96,6 +97,8 @@ export type DeltaTAlongPath = {
   delta_t_s: number[]
   t_a_s: number[]
   t_b_s: number[]
+  t_reference_s?: number[]
+  t_run_s?: number[]
   /** Per-meter time spread across runs that built the reference (for pace band), when present. */
   t_reference_sigma_s?: number[] | null
 }

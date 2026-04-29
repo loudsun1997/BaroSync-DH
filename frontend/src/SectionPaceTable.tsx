@@ -1,7 +1,6 @@
 import { useMemo, Fragment } from 'react'
 import { computeTrailSectorsSimple } from './trailSectors'
 import type { ComparisonPayload, RunResult, CanonicalReference } from './types'
-import { distanceSeries } from './distanceUtils'
 import { numAt, telemetryLen } from './telemetryAccess'
 
 type Props = {

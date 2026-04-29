@@ -4,10 +4,9 @@ import { createPortal } from 'react-dom'
 import { collectFiniteYFromTraces, robustYAxisRange } from './chartScales'
 import { plotlyDistanceExplorerConfig } from './plotlyConfig'
 import { Plot } from './plotlyFactory'
-import { buildDeltaTSlopeTraces, buildVzTonedAltitudeTraces } from './paceChartSegments'
+import { buildVzTonedAltitudeTraces } from './paceChartSegments'
 import {
   distanceSeries,
-  interpAlongDistance,
   interpTelemetryScalarAlongDistance,
 } from './distanceUtils'
 import { altitudeChartSeries, telemetryLen } from './telemetryAccess'
@@ -277,7 +276,7 @@ export function TelemetryCharts({
   activeDisplayM,
   onActiveDisplayM,
   comparison,
-  runLabelB,
+  runLabelB: _runLabelB,
   canonicalRef,
   paceRunIndex = 1,
   distanceFocusRange: distanceFocusRangeProp,
@@ -287,6 +286,7 @@ export function TelemetryCharts({
   yPercentileHigh,
   baselineRunIndex = null,
 }: Props) {
+  void _runLabelB
   const lastSyncedDisplayMRef = useRef<number | null>(null)
   useEffect(() => {
     if (activeDisplayM != null && Number.isFinite(activeDisplayM)) {
@@ -583,7 +583,7 @@ export function TelemetryCharts({
     }
   }, [distanceChartFullscreen])
 
-  const { altData, chartDataRevision } = chartFigures
+  const { altData } = chartFigures
 
   const distanceExplorerHint = showXRangeSlider
     ? 'Wheel = zoom. Drag on plot = box zoom a region. Toolbar = pan, box zoom, home. Double-click = reset. Strip = scroll window along distance. Sectors above zoom the Δt and altitude charts together.'
@@ -592,10 +592,6 @@ export function TelemetryCharts({
   const distChartsHint = `${distanceExplorerHint} Move along a chart (or the strip) to move map cursors. Leave a plot to clear.`
 
   const altHeight = distanceChartFullscreen === 'alt' ? '100%' : 200
-  const deltaHeight = distanceChartFullscreen === 'delta' ? '100%' : 360
-
-  const paceRef = Boolean(comparison?.pace_vs_reference)
-
   const hoverCaption = useMemo(() => {
     if (activeDisplayM == null) return null;
 
@@ -703,7 +699,5 @@ export function TelemetryCharts({
     </div>
   )
 }
-
-
 
 

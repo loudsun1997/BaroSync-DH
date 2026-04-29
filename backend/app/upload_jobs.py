@@ -9,6 +9,12 @@ import uuid
 import zipfile
 from typing import Any
 
+from app.db import (
+    find_existing_session_for_hashes,
+    get_session_result,
+    persist_upload_result,
+    upload_file_hashes,
+)
 from app.processing.pipeline import process_multi_zip_bytes, process_zip_bytes
 
 _log = logging.getLogger(__name__)
@@ -68,12 +74,51 @@ def run_upload_job(
     multi_pairs: list[tuple[bytes, str]],
     single_bytes: bytes | None,
     single_stem: str | None,
+    trail_id: str | None = None,
 ) -> None:
     def progress(step: str, pct: int) -> None:
         _update(job_id, status="running", step=step, progress=pct)
 
     try:
         progress("Starting…", 0)
+        uploaded_files: list[dict[str, Any]] = [
+            {
+                "bytes": data,
+                "stem": stem,
+                "filename": f"{stem}.zip",
+                "content_type": "application/zip",
+            }
+            for data, stem in multi_pairs
+        ]
+        if not uploaded_files and single_bytes is not None:
+            stem = single_stem or "upload"
+            uploaded_files.append(
+                {
+                    "bytes": single_bytes,
+                    "stem": stem,
+                    "filename": f"{stem}.zip",
+                    "content_type": "application/zip",
+                }
+            )
+        hashes = upload_file_hashes(uploaded_files)
+        existing_session_id = find_existing_session_for_hashes(hashes, trail_id=trail_id)
+        if existing_session_id:
+            existing_result = get_session_result(existing_session_id)
+            if isinstance(existing_result, dict):
+                existing_result["database"] = {
+                    "trail_id": trail_id,
+                    "session_id": existing_session_id,
+                    "duplicate_upload": True,
+                    "reused_existing_session": True,
+                }
+                _update(job_id, status="done", step="Duplicate upload reused", progress=100, result=existing_result)
+                _log.info(
+                    "Upload job reused existing session job_id=%s session_id=%s",
+                    job_id,
+                    existing_session_id,
+                )
+                return
+
         if multi_pairs:
             if len(multi_pairs) == 1:
                 result = process_zip_bytes(
@@ -87,6 +132,20 @@ def run_upload_job(
             result = process_zip_bytes(single_bytes, source_stem=single_stem, progress=progress)
         else:
             raise ValueError("No upload payload")
+        source_names = [stem for _, stem in multi_pairs]
+        if not source_names and single_stem:
+            source_names = [single_stem]
+        if isinstance(result, dict):
+            persisted = persist_upload_result(
+                result,
+                trail_id=trail_id,
+                source_names=source_names,
+                uploaded_files=uploaded_files,
+            )
+            result["database"] = {
+                "trail_id": trail_id,
+                **persisted,
+            }
         _update(job_id, status="done", step="Complete", progress=100, result=result)
         _log.info(
             "Upload job OK job_id=%s run_count=%s",

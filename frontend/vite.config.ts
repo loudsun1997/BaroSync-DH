@@ -6,6 +6,9 @@ export default defineConfig({
   server: {
     proxy: {
       '/upload': { target: 'http://127.0.0.1:8000', changeOrigin: true },
+      '/trails': { target: 'http://127.0.0.1:8000', changeOrigin: true },
+      '/runs': { target: 'http://127.0.0.1:8000', changeOrigin: true },
+      '/sessions': { target: 'http://127.0.0.1:8000', changeOrigin: true },
       '/align-baro': { target: 'http://127.0.0.1:8000', changeOrigin: true },
       '/synthesize-baseline': { target: 'http://127.0.0.1:8000', changeOrigin: true },
       '/pace-vs-reference': { target: 'http://127.0.0.1:8000', changeOrigin: true },

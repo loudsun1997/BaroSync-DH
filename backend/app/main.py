@@ -6,7 +6,7 @@ import zipfile
 from pathlib import Path
 from typing import Any
 
-from fastapi import BackgroundTasks, FastAPI, File, HTTPException, Query, Request, UploadFile
+from fastapi import BackgroundTasks, FastAPI, File, Form, HTTPException, Query, Request, UploadFile
 from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field, ValidationError
@@ -29,6 +29,15 @@ from app.processing.pipeline import (
     save_calculated_session_exports,
 )
 from app.logging_setup import attach_file_logging
+from app.db import (
+    create_trail,
+    get_or_create_trail,
+    get_session_result,
+    get_trail,
+    list_session_files,
+    list_sessions,
+    list_trails,
+)
 from app.upload_jobs import create_job, get_job_public, run_upload_job
 
 app = FastAPI(title="BaroSync DH Telemetry Lab", version="0.1.0")
@@ -99,9 +108,78 @@ class PaceVsReferenceRequest(BaseModel):
     ref_elevation_m: list[float]
 
 
+class TrailCreateRequest(BaseModel):
+    name: str = Field(min_length=1, max_length=160)
+    location: str | None = Field(default=None, max_length=240)
+    description: str | None = Field(default=None, max_length=1000)
+
+
 @app.get("/health")
 def health():
     return {"status": "ok"}
+
+
+@app.get("/trails")
+def trails_index():
+    return {"trails": list_trails()}
+
+
+@app.post("/trails")
+def trails_create(body: TrailCreateRequest):
+    try:
+        return {"trail": create_trail(body.name, location=body.location, description=body.description)}
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e)) from e
+
+
+def _trail_run_records(trail_id: str, limit: int) -> list[dict[str, Any]]:
+    if get_trail(trail_id) is None:
+        raise HTTPException(status_code=404, detail="Unknown trail")
+    return list_sessions(trail_id=trail_id, limit=limit)
+
+
+@app.get("/trails/{trail_id}/runs")
+def trail_runs(trail_id: str, limit: int = Query(default=25, ge=1, le=200)):
+    return {"runs": _trail_run_records(trail_id, limit)}
+
+
+@app.get("/runs")
+def runs_index(limit: int = Query(default=25, ge=1, le=200)):
+    return {"runs": list_sessions(limit=limit)}
+
+
+@app.get("/runs/{run_record_id}")
+def runs_show(run_record_id: str):
+    result = get_session_result(run_record_id)
+    if result is None:
+        raise HTTPException(status_code=404, detail="Unknown run")
+    return result
+
+
+@app.get("/trails/{trail_id}/sessions")
+def trail_sessions(trail_id: str, limit: int = Query(default=25, ge=1, le=200)):
+    return {"sessions": _trail_run_records(trail_id, limit)}
+
+
+@app.get("/sessions")
+def sessions_index(limit: int = Query(default=25, ge=1, le=200)):
+    return {"sessions": list_sessions(limit=limit)}
+
+
+@app.get("/sessions/{session_id}")
+def sessions_show(session_id: str):
+    result = get_session_result(session_id)
+    if result is None:
+        raise HTTPException(status_code=404, detail="Unknown session")
+    return result
+
+
+@app.get("/sessions/{session_id}/files")
+def sessions_files(session_id: str):
+    files = list_session_files(session_id)
+    if not files and get_session_result(session_id) is None:
+        raise HTTPException(status_code=404, detail="Unknown session")
+    return {"files": files}
 
 
 @app.get("/upload/status/{job_id}")
@@ -115,6 +193,8 @@ def upload_status(job_id: str):
 @app.post("/upload")
 async def upload(
     background_tasks: BackgroundTasks,
+    trail_id: str | None = Form(default=None),
+    create_trail_name: str | None = Form(default=None),
     zip_file: UploadFile | None = File(None, description="Optional single-ZIP field (same as one file in `files`)"),
     files: list[UploadFile] | None = File(None, description="One or more ZIPs (multi-lap upload)"),
 ):
@@ -137,6 +217,17 @@ async def upload(
     else:
         raise HTTPException(status_code=400, detail="Provide a ZIP file (zip_file) or multiple ZIPs (files)")
 
+    selected_trail_id: str | None = None
+    if create_trail_name and create_trail_name.strip():
+        try:
+            selected_trail_id = get_or_create_trail(create_trail_name)["id"]
+        except ValueError as e:
+            raise HTTPException(status_code=400, detail=str(e)) from e
+    elif trail_id and trail_id.strip():
+        if get_trail(trail_id) is None:
+            raise HTTPException(status_code=400, detail="Unknown trail_id")
+        selected_trail_id = trail_id
+
     if multi_pairs:
         logger.info(
             "Upload: %d zip(s): %s",
@@ -155,6 +246,7 @@ async def upload(
             multi_pairs,
             single_bytes,
             single_stem,
+            selected_trail_id,
         )
 
     background_tasks.add_task(run_job)

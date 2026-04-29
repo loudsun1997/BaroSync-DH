@@ -6,7 +6,7 @@ import { Plot } from './plotlyFactory'
 import { distanceSeries, interpAlongDistance, nearestIndexForDistanceM, interpXYAlongDistance } from './distanceUtils'
 import { gateLineFromMeta, gateLineFromPreview, nearestIndexOnTrail, perpendicularGateLonLat } from './gateGeometry'
 import { latAt, lonAt, numAt, telemetryLen, telemetryLonLatArrays } from './telemetryAccess'
-import type { AlignmentMeta, ComparisonPayload, GatePreview, RunResult } from './types'
+import type { AlignmentMeta, CanonicalReference, ComparisonPayload, GatePreview, RunResult } from './types'
 import {
   MAX_MAP_VIEW_POINTS,
   mapPointBudgetForViewBox,

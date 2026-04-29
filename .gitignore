@@ -1,5 +1,8 @@
 logs/
 calculated_exports/
+data/*.db
+data/blobs/
+data/upload_results/
 backend/.venv/
 __pycache__/
 *.py[cod]
